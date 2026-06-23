@@ -1,10 +1,10 @@
 services:
-  infra-platform:
+  homeinfra-control-center:
     build:
       context: .
       dockerfile: Dockerfile
-    image: infra-platform:latest
-    container_name: infra-platform
+    image: homeinfra-control-center:latest
+    container_name: homeinfra-control-center
     restart: unless-stopped
     environment:
       APP_HOST: "${APP_HOST:-0.0.0.0}"
@@ -12,7 +12,7 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       HOMEINFRA_DB_PATH: "${HOMEINFRA_DB_PATH:-/app/data/homeinfra.db}"
       COLLECTOR_MODE: "${COLLECTOR_MODE:-disabled}"
-      SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-1}"
+      SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-0}"
       SSH_CONNECT_TIMEOUT: "${SSH_CONNECT_TIMEOUT:-10}"
       SSH_RETRY_MAX: "${SSH_RETRY_MAX:-2}"
       SSH_RETRY_BASE_DELAY: "${SSH_RETRY_BASE_DELAY:-1.0}"
@@ -20,8 +20,8 @@ services:
     ports:
       - "${HOST_PORT:-8010}:${APP_PORT:-8000}"
     volumes:
-      - infra_data:/app/data
-      - infra_logs:/app/logs
+      - homeinfra_control_center_data:/app/data
+      - homeinfra_control_center_logs:/app/logs
       - "${HOMEINFRA_SSH_DIR:-./ssh}:/app/ssh:ro"
       - "${HOMEINFRA_SSH_KEYS:-./ssh-keys}:/app/ssh-keys:ro"
     read_only: true
@@ -48,5 +48,5 @@ services:
       start_period: 5s
 
 volumes:
-  infra_data:
-  infra_logs:
+  homeinfra_control_center_data:
+  homeinfra_control_center_logs:

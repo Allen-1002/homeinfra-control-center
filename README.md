@@ -15,6 +15,10 @@
 
 它主要面向家庭或实验环境，不适合直接暴露到公网。
 
+## 界面截图
+
+![设备管理页面](./docs/screenshots/device-management.png)
+
 ## 功能特性
 
 - 设备的新增、编辑、删除、启用/禁用、测试连接和手动刷新
@@ -78,6 +82,16 @@ python3 run.py --db-path /app/data/homeinfra.db
 | --- | --- | --- |
 | Disabled | `disabled` | 仅保存设备配置，不执行采集 |
 | SSH | `ssh` | 通过 SSH 连接目标设备，并执行受白名单限制的只读命令 |
+
+出于公开项目的默认安全考虑，`.env.example` 中的 `SSH_AUTO_ACCEPT_HOST_KEY` 默认值为 `0`，即默认不自动接受 SSH 主机指纹。
+
+如果是在受信任的家庭内网环境中进行首次接入测试，可以临时设置为：
+
+```sh
+SSH_AUTO_ACCEPT_HOST_KEY=1
+```
+
+完成首次确认后，建议改回 `0`，并配合 `SSH_KNOWN_HOSTS` 使用。
 
 本地运行示例：
 

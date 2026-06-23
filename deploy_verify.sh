@@ -62,7 +62,7 @@ step1_docker() {
 
   # 检查容器内 SSH 配置
   log "   checking SSH env in container..."
-  SSH_ENV=$(docker compose exec -T app env 2>/dev/null | grep -E "COLLECTOR_MODE|SSH" || true)
+  SSH_ENV=$(docker compose exec -T homeinfra-control-center env 2>/dev/null | grep -E "COLLECTOR_MODE|SSH" || true)
   echo "$SSH_ENV"
   if echo "$SSH_ENV" | grep -q "COLLECTOR_MODE=ssh"; then
     pass "COLLECTOR_MODE=ssh 已设置"
@@ -72,7 +72,7 @@ step1_docker() {
 
   # 检查 SSH key 可读
   log "   checking SSH key in container..."
-  if docker compose exec -T app test -r "$DEVICE_KEY" 2>/dev/null; then
+  if docker compose exec -T homeinfra-control-center test -r "$DEVICE_KEY" 2>/dev/null; then
     pass "SSH key 可读: $DEVICE_KEY"
   else
     fail "SSH key 不可读: $DEVICE_KEY"
@@ -323,14 +323,14 @@ step6_security() {
   log "7. 容器安全检查..."
   
   # 确认没有私钥在容器文件系统（除了挂载的）
-  if docker compose exec -T app find /app -name "*.pem" -o -name "id_rsa" -o -name "id_ed25519" 2>/dev/null | grep -v "/app/ssh-keys"; then
+  if docker compose exec -T homeinfra-control-center find /app -name "*.pem" -o -name "id_rsa" -o -name "id_ed25519" 2>/dev/null | grep -v "/app/ssh-keys"; then
     fail "容器内发现 SSH 私钥文件!"
   else
     pass "容器内无未授权私钥文件"
   fi
 
   # 确认 .env 不在镜像内
-  if docker compose exec -T app test -f /app/.env 2>/dev/null; then
+  if docker compose exec -T homeinfra-control-center test -f /app/.env 2>/dev/null; then
     fail ".env 被打包进镜像!"
   else
     pass ".env 不在镜像内"
