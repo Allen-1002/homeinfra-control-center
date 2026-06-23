@@ -9,6 +9,7 @@ from homeinfra.collector_service import CollectorService
 from homeinfra.errors import ApiError
 from homeinfra.monitoring import MonitoringService
 from homeinfra.persistence import SQLiteStore
+from homeinfra.scheduler import CollectionScheduler
 
 
 class MonitoringContractTestCase(unittest.TestCase):
@@ -1394,3 +1395,45 @@ class CollectionIntervalTests(MonitoringContractTestCase):
         # After collection last_seen is set -> not due again immediately
         n2 = service.run_scheduled_collection(timeout=5)
         self.assertEqual(n2, 0)
+
+    def test_scheduler_uses_service_monitoring_for_background_collection(self):
+        class _FakeStop:
+            def __init__(self):
+                self._wait_calls = 0
+                self._stopped = False
+
+            def wait(self, _timeout):
+                self._wait_calls += 1
+                if self._wait_calls == 1:
+                    return False
+                self._stopped = True
+                return True
+
+            def is_set(self):
+                return self._stopped
+
+            def set(self):
+                self._stopped = True
+
+        collector = RecordingCollector()
+        app = HomeInfraApp(
+            static_dir="static",
+            collector_mode="ssh",
+            collector_service_override=CollectorService(
+                collector, sample_interval=0.0, data_source="ssh", is_real_data=True
+            ),
+        )
+        app.service.monitoring.create_group({"name": "G", "id": "g-sch-bg"})
+        device = app.service.monitoring.create_device({
+            "name": "sch-bg",
+            "host": "198.51.100.8",
+            "device_type": "linux_server",
+            "group_id": "g-sch-bg",
+        })
+        scheduler = CollectionScheduler(app, tick_interval=1, timeout=5)
+        scheduler._stop = _FakeStop()
+
+        scheduler._loop()
+
+        history = app.service.monitoring.list_collection_records(device_id=device["id"])
+        self.assertGreaterEqual(len(history["records"]), 1)

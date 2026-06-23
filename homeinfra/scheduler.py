@@ -47,7 +47,7 @@ class CollectionScheduler:
             return
         while not self._stop.is_set():
             try:
-                self.app.monitoring.run_scheduled_collection(timeout=self.timeout)
+                self.app.service.monitoring.run_scheduled_collection(timeout=self.timeout)
             except Exception as exc:  # never let the loop die
                 logger.warning("scheduled collection error: %s", exc)
             if self._stop.wait(self.tick_interval):
