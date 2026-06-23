@@ -41,7 +41,7 @@ class FrontendSmokeTests(unittest.TestCase):
         )
         self.assertRegex(
             script,
-            r"nas|vpn|automation|alert",
+            r"nas|alert|monitoring|device",
             "app.js should render infrastructure dashboard concepts",
         )
 

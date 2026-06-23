@@ -393,113 +393,6 @@ def build_initial_state() -> dict[str, Any]:
     monitoring = build_monitoring_seed(now)
     return {
         "started_at": isoformat(now),
-        "nas": {
-            "cluster": "homeinfra-nas-01",
-            "capacity_percent": 92,
-            "used_tb": 44,
-            "total_tb": 48,
-            "raid_status": "degraded",
-            "backup": {
-                "last_success_at": isoformat(now - timedelta(days=9)),
-                "target": "mock://backup-target",
-                "status": "stale",
-            },
-            "sync_jobs": [
-                {
-                    "id": "sync-media",
-                    "name": "Media Archive Sync",
-                    "state": "running",
-                    "source": "/volume1/media",
-                    "destination": "/volume2/archive",
-                    "updated_at": isoformat(now - timedelta(minutes=4)),
-                },
-                {
-                    "id": "sync-docs",
-                    "name": "Document Replication",
-                    "state": "paused",
-                    "source": "/volume1/docs",
-                    "destination": "/volume2/docs-backup",
-                    "updated_at": isoformat(now - timedelta(hours=2)),
-                },
-            ],
-        },
-        "vpn": {
-            "service": "mock-wireguard",
-            "active_tunnels": 2,
-            "max_key_age_days": 21,
-            "clients": [
-                {
-                    "id": "client-alice",
-                    "name": "Alice MacBook",
-                    "state": "connected",
-                    "ip": "10.8.0.10",
-                    "last_seen_at": isoformat(now - timedelta(seconds=40)),
-                    "location": "Shanghai",
-                    "trusted": True,
-                },
-                {
-                    "id": "client-bob",
-                    "name": "Bob iPhone",
-                    "state": "stale",
-                    "ip": "10.8.0.23",
-                    "last_seen_at": isoformat(now - timedelta(minutes=45)),
-                    "location": "Unknown",
-                    "trusted": False,
-                },
-            ],
-        },
-        "docker": {
-            "host": "mock-docker-host",
-            "image_disk_gb": 91,
-            "restarting": 1,
-            "containers": [
-                {
-                    "id": "ctr-homeassistant",
-                    "name": "homeassistant",
-                    "image": "ghcr.io/mock/homeassistant:latest",
-                    "state": "running",
-                    "restart_policy": "unless-stopped",
-                    "logs": [
-                        "2026-06-20T06:00:00Z service started",
-                        "2026-06-20T06:05:00Z integrations healthy",
-                    ],
-                },
-                {
-                    "id": "ctr-node-red",
-                    "name": "node-red",
-                    "image": "docker.io/mock/node-red:latest",
-                    "state": "stopped",
-                    "restart_policy": "unless-stopped",
-                    "logs": [
-                        "2026-06-20T05:10:00Z service stopped by operator",
-                    ],
-                },
-            ],
-        },
-        "automation": {
-            "tasks": [
-                {
-                    "id": "task-nightly-backup",
-                    "name": "Nightly Backup Validation",
-                    "state": "idle",
-                    "run_count": 0,
-                    "retry_count": 0,
-                    "max_retries": 3,
-                    "last_error": None,
-                    "last_run_at": None,
-                },
-                {
-                    "id": "task-vpn-audit",
-                    "name": "VPN Client Audit",
-                    "state": "paused",
-                    "run_count": 2,
-                    "retry_count": 1,
-                    "max_retries": 2,
-                    "last_error": "stale clients detected",
-                    "last_run_at": isoformat(now - timedelta(hours=8)),
-                },
-            ],
-        },
         "audit_logs": [],
         "users": [],
         "sessions": [],
@@ -516,10 +409,6 @@ def build_initial_state() -> dict[str, Any]:
             "errors_total": 0,
             "audit_events_total": 0,
             "high_risk_denied_total": 0,
-            "task_runs_total": 0,
-            "container_operations_total": 0,
-            "vpn_disconnects_total": 0,
-            "backup_runs_total": 0,
             "device_group_writes_total": 0,
             "device_writes_total": 0,
             "device_test_total": 0,
@@ -556,9 +445,11 @@ def build_empty_state() -> dict[str, Any]:
 def build_mock_data() -> dict[str, Any]:
     state = build_initial_state()
     return {
-        "nas": state["nas"],
-        "vpn_clients": state["vpn"]["clients"],
-        "automation_tasks": state["automation"]["tasks"],
+        "summary": {
+            "device_groups": len(state["device_groups"]),
+            "devices": len(state["devices"]),
+            "alerts": len(state["alerts"]),
+        },
         "device_groups": state["device_groups"],
         "devices": state["devices"],
         "collection_records": state["collection_records"],

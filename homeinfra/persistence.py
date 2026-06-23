@@ -14,10 +14,6 @@ from .mock_data import build_empty_state, build_initial_state
 
 STATE_KEYS = (
     "started_at",
-    "nas",
-    "vpn",
-    "docker",
-    "automation",
     "audit_logs",
     "users",
     "sessions",
@@ -149,7 +145,7 @@ DDL_STATEMENTS = [
         details TEXT NOT NULL DEFAULT '{}'
     )
     """,
-    # Key-value store (retention, metrics, nas, vpn, docker, automation configs)
+    # Key-value store (retention, metrics, collection settings, etc.)
     """
     CREATE TABLE IF NOT EXISTS app_config (
         key TEXT PRIMARY KEY,
@@ -263,7 +259,7 @@ class SQLiteStore:
 
         # Write config values
         config_keys = {
-            "started_at", "nas", "vpn", "docker", "automation",
+            "started_at",
             "retention_settings", "collection_settings", "metrics",
         }
         for key in config_keys:
@@ -393,7 +389,7 @@ class SQLiteStore:
         }
         seed = build_empty_state()
         config_keys = {
-            "started_at", "nas", "vpn", "docker", "automation",
+            "started_at",
             "retention_settings", "collection_settings", "metrics",
         }
         for key in config_keys:
@@ -485,13 +481,13 @@ class SQLiteStore:
             finally:
                 conn.close()
 
-    # ── Single-key read (used by operations.py for nas, vpn, docker, etc.) ──
+    # ── Single-key read ──
 
     def read(self, key: str) -> Any:
         with self._lock:
             conn = self._connect()
             try:
-                if key in {"nas", "vpn", "docker", "automation", "retention_settings", "collection_settings", "metrics", "started_at"}:
+                if key in {"retention_settings", "collection_settings", "metrics", "started_at"}:
                     row = conn.execute(
                         "SELECT value FROM app_config WHERE key = ?", (key,)
                     ).fetchone()
@@ -643,7 +639,7 @@ class SQLiteStore:
 
         # Config key-values
         config_keys = {
-            "started_at", "nas", "vpn", "docker", "automation",
+            "started_at",
             "retention_settings", "collection_settings", "metrics",
         }
         for key in config_keys:

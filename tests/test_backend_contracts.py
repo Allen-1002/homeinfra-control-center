@@ -100,17 +100,17 @@ class PermissionDecisionTests(ContractTestCase):
         actor = {
             "id": "u-admin",
             "role": "admin",
-            "permissions": ["automation:write", "nas:read"],
+            "permissions": ["devices:write", "groups:read"],
         }
-        permission = "automation:write"
+        permission = "devices:write"
 
         decision = self.call_any(
             self.decide,
-            ((), {"actor": actor, "resource": "automation", "action": "write"}),
-            ((actor, "automation", "write"), {}),
+            ((), {"actor": actor, "resource": "devices", "action": "write"}),
+            ((actor, "devices", "write"), {}),
             ((actor, permission), {}),
             ((), {"actor": actor, "permission": permission}),
-            (({"actor": actor, "resource": "automation", "action": "write"},), {}),
+            (({"actor": actor, "resource": "devices", "action": "write"},), {}),
         )
 
         self.assertTrue(self.allowed_value(decision))
@@ -119,99 +119,20 @@ class PermissionDecisionTests(ContractTestCase):
         actor = {
             "id": "u-viewer",
             "role": "viewer",
-            "permissions": ["automation:read"],
+            "permissions": ["devices:read"],
         }
-        permission = "automation:write"
+        permission = "devices:write"
 
         decision = self.call_any(
             self.decide,
-            ((), {"actor": actor, "resource": "automation", "action": "write"}),
-            ((actor, "automation", "write"), {}),
+            ((), {"actor": actor, "resource": "devices", "action": "write"}),
+            ((actor, "devices", "write"), {}),
             ((actor, permission), {}),
             ((), {"actor": actor, "permission": permission}),
-            (({"actor": actor, "resource": "automation", "action": "write"},), {}),
+            (({"actor": actor, "resource": "devices", "action": "write"},), {}),
         )
 
         self.assertFalse(self.allowed_value(decision))
-
-
-class AutomationTaskStateMachineTests(ContractTestCase):
-    def setUp(self):
-        self.module = self.import_first(
-            "homeinfra.automation",
-            "homeinfra.automation_tasks",
-            "homeinfra.tasks",
-        )
-
-    def test_task_can_progress_from_pending_to_running_to_success(self):
-        transition = getattr(self.module, "transition_task_state", None)
-        if transition is None:
-            transition = getattr(self.module, "next_task_state", None)
-
-        if transition is not None:
-            running = self.call_any(
-                transition,
-                (("pending", "start"), {}),
-                ((), {"state": "pending", "event": "start"}),
-            )
-            self.assertIn(str(running).lower(), {"running", "in_progress"})
-
-            success = self.call_any(
-                transition,
-                ((str(running), "succeed"), {}),
-                ((), {"state": str(running), "event": "succeed"}),
-            )
-            self.assertIn(str(success).lower(), {"succeeded", "success", "completed"})
-            return
-
-        task_cls = self.find_attr(
-            self.module,
-            "AutomationTask",
-            "AutomationTaskStateMachine",
-            "TaskStateMachine",
-        )
-        task = self.call_any(
-            task_cls,
-            ((), {"task_id": "task-1", "name": "backup"}),
-            (("task-1", "backup"), {}),
-            ((), {}),
-        )
-
-        start = self.find_attr(task, "start", "run", "mark_running")
-        self.call_any(start, ((), {}))
-        self.assertIn(
-            str(getattr(task, "state")).lower(),
-            {"running", "in_progress"},
-        )
-
-        succeed = self.find_attr(task, "succeed", "complete", "mark_succeeded")
-        self.call_any(succeed, ((), {}))
-        self.assertIn(
-            str(getattr(task, "state")).lower(),
-            {"succeeded", "success", "completed"},
-        )
-
-    def test_terminal_success_state_cannot_restart(self):
-        transition = getattr(self.module, "transition_task_state", None)
-        if transition is None:
-            transition = getattr(self.module, "next_task_state", None)
-        if transition is None:
-            self.skipTest("State function not available for terminal contract check")
-
-        try:
-            result = self.call_any(
-                transition,
-                (("succeeded", "start"), {}),
-                ((), {"state": "succeeded", "event": "start"}),
-            )
-        except Exception:
-            return
-
-        self.assertIn(
-            str(result).lower(),
-            {"succeeded", "success", "completed"},
-            "Terminal success state must not transition back to running.",
-        )
 
 
 class AlertGenerationTests(ContractTestCase):
@@ -231,9 +152,6 @@ class AlertGenerationTests(ContractTestCase):
                 "raid_status": "degraded",
                 "backup_age_days": 10,
             },
-            "vpn_clients": [
-                {"name": "phone", "enabled": True, "last_handshake_age_days": 45}
-            ],
         }
 
         alerts = self.call_any(
@@ -245,7 +163,7 @@ class AlertGenerationTests(ContractTestCase):
         self.assertIsInstance(alerts, list)
         self.assertGreaterEqual(len(alerts), 1)
         rendered = json.dumps(alerts, ensure_ascii=False).lower()
-        self.assertRegex(rendered, r"capacity|raid|backup|vpn|handshake")
+        self.assertRegex(rendered, r"capacity|raid|backup")
         self.assertRegex(rendered, r"warning|high|critical|error")
 
     def test_healthy_snapshot_does_not_create_warning_alerts(self):
@@ -255,9 +173,6 @@ class AlertGenerationTests(ContractTestCase):
                 "raid_status": "healthy",
                 "backup_age_days": 0,
             },
-            "vpn_clients": [
-                {"name": "laptop", "enabled": True, "last_handshake_age_days": 1}
-            ],
         }
 
         alerts = self.call_any(
@@ -311,54 +226,6 @@ class NasRiskTests(ContractTestCase):
         self.assertIn(self.severity_value(result), {"ok", "low", "healthy", "none"})
 
 
-class VpnClientRiskTests(ContractTestCase):
-    def setUp(self):
-        module = self.import_first(
-            "homeinfra.vpn",
-            "homeinfra.risk.vpn",
-            "homeinfra.risk",
-        )
-        self.assess = self.find_attr(
-            module,
-            "assess_vpn_client_risk",
-            "evaluate_vpn_client_risk",
-            "vpn_client_risk",
-        )
-
-    def test_stale_enabled_client_with_wide_route_is_risky(self):
-        client = {
-            "name": "old-phone",
-            "enabled": True,
-            "last_handshake_age_days": 45,
-            "allowed_ips": ["0.0.0.0/0"],
-        }
-
-        result = self.call_any(
-            self.assess,
-            ((client,), {}),
-            ((), {"client": client}),
-        )
-
-        self.assertIn(self.severity_value(result), {"medium", "high", "critical"})
-        self.assertRegex(self.reasons_text(result), r"handshake|stale|route|wide")
-
-    def test_recent_limited_client_is_low_risk(self):
-        client = {
-            "name": "laptop",
-            "enabled": True,
-            "last_handshake_age_days": 1,
-            "allowed_ips": ["192.0.2.21/32"],
-        }
-
-        result = self.call_any(
-            self.assess,
-            ((client,), {}),
-            ((), {"client": client}),
-        )
-
-        self.assertIn(self.severity_value(result), {"ok", "low", "healthy", "none"})
-
-
 class MockDataContractTests(ContractTestCase):
     def setUp(self):
         module = self.import_first(
@@ -385,10 +252,9 @@ class MockDataContractTests(ContractTestCase):
         data = self.get_data()
 
         self.assertIsInstance(data, dict)
-        for key in ("nas", "vpn_clients", "automation_tasks", "alerts"):
+        for key in ("summary", "device_groups", "devices", "collection_records", "alerts", "audit_logs"):
             self.assertIn(key, data)
-        self.assertIsInstance(data["vpn_clients"], list)
-        self.assertIsInstance(data["automation_tasks"], list)
+        self.assertIsInstance(data["summary"], dict)
         self.assertIsInstance(data["alerts"], list)
 
     def test_mock_data_is_json_serializable(self):

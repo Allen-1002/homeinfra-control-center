@@ -97,8 +97,6 @@ def collect_mock_metrics() -> dict[str, Any]:
         purpose="test",
     ).payload
     payload["nas"] = {"storage_pool": payload.get("storage_pool")}
-    payload["vpn_clients"] = []
-    payload["automation_tasks"] = []
     payload["alerts"] = []
     return payload
 

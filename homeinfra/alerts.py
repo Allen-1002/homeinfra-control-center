@@ -1,10 +1,10 @@
-"""Alert generation from mock infrastructure snapshots."""
+"""Alert generation from monitored infrastructure snapshots."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from .risk import assess_nas_risk, assess_vpn_client_risk
+from .risk import assess_nas_risk
 
 
 def generate_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -23,18 +23,6 @@ def generate_alerts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
 
-    for index, client in enumerate(snapshot.get("vpn_clients", [])):
-        result = assess_vpn_client_risk(client)
-        if result["severity"] not in {"ok", "low", "healthy", "none"}:
-            alerts.append(
-                {
-                    "id": f"alert-vpn-client-{client.get('id', index)}",
-                    "source": "vpn",
-                    "severity": result["severity"],
-                    "title": "VPN client risk detected",
-                    "message": f"{client.get('name', 'client')}: " + "; ".join(result["reasons"]),
-                }
-            )
     return alerts
 
 

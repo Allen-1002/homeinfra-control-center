@@ -1,4 +1,4 @@
-"""Risk detection for NAS and VPN state."""
+"""Risk detection for monitored infrastructure state."""
 
 from __future__ import annotations
 
@@ -74,53 +74,3 @@ def assess_nas_risk(nas: dict[str, Any]) -> dict[str, Any]:
 
 evaluate_nas_risk = assess_nas_risk
 nas_risk = assess_nas_risk
-
-
-def build_vpn_risks(vpn: dict[str, Any]) -> list[dict[str, Any]]:
-    now = datetime.now(timezone.utc)
-    risks: list[dict[str, Any]] = []
-    for client in vpn["clients"]:
-        age_seconds = int((now - _parse_timestamp(client["last_seen_at"])).total_seconds())
-        if age_seconds > 1800:
-            risks.append(
-                {
-                    "severity": "warning",
-                    "code": "vpn_client_stale",
-                    "message": f"{client['name']} 已静默 {age_seconds} 秒",
-                    "client_id": client["id"],
-                }
-            )
-        if client["location"] == "Unknown" or not client["trusted"]:
-            risks.append(
-                {
-                    "severity": "critical",
-                    "code": "vpn_client_unusual",
-                    "message": f"{client['name']} 被标记为异常客户端",
-                    "client_id": client["id"],
-                }
-            )
-    return risks
-
-
-def assess_vpn_client_risk(client: dict[str, Any]) -> dict[str, Any]:
-    """Return a compact VPN client risk envelope."""
-    reasons: list[str] = []
-    severity = "ok"
-    age_days = client.get("last_handshake_age_days")
-    if age_days is None and client.get("last_seen_at"):
-        age_days = (datetime.now(timezone.utc) - _parse_timestamp(client["last_seen_at"])).days
-    if client.get("enabled", True) and age_days is not None and int(age_days) > 30:
-        severity = "high"
-        reasons.append(f"握手已过期 {age_days} 天 (handshake stale)")
-    allowed_ips = client.get("allowed_ips", [])
-    if "0.0.0.0/0" in allowed_ips or "::/0" in allowed_ips:
-        severity = "high" if severity == "ok" else severity
-        reasons.append("允许的路由范围过大 (wide route)")
-    if client.get("location") == "Unknown" or client.get("trusted") is False:
-        severity = "critical"
-        reasons.append("客户端不受信任或来源未知")
-    return {"severity": severity, "reasons": reasons}
-
-
-evaluate_vpn_client_risk = assess_vpn_client_risk
-vpn_client_risk = assess_vpn_client_risk

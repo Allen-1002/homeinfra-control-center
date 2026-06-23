@@ -299,26 +299,6 @@ class HomeInfraApp:
                     "status": query.get("status", [None])[0],
                 }
             )
-        if method == "GET" and path == "/api/v1/nas":
-            return service.get_nas()
-        if method == "POST" and path == "/api/v1/nas/backup":
-            require_permission(principal, "nas", "write")
-            result = service.start_backup()
-            service.audit.record(
-                actor=actor,
-                role=role,
-                action="nas.backup.start",
-                resource="nas/backup",
-                outcome="success",
-                request_id=request_id,
-            )
-            return result
-        if method == "GET" and path == "/api/v1/vpn":
-            return service.get_vpn()
-        if method == "GET" and path == "/api/v1/docker":
-            return service.get_docker()
-        if method == "GET" and path == "/api/v1/automation":
-            return service.automation.list_tasks()
         if method == "GET" and path == "/api/v1/audit":
             require_permission(principal, "audit", "read")
             try:
@@ -549,95 +529,6 @@ class HomeInfraApp:
                     request_id=request_id,
                 )
                 return result
-
-        if method == "POST" and len(parts) == 6 and parts[2] == "nas" and parts[3] == "sync":
-            require_permission(principal, "nas", "write")
-            sync_id, action = parts[4], parts[5]
-            if action not in {"pause", "resume"}:
-                raise NotFoundError("route", path)
-            if action == "pause":
-                self.ensure_confirmation(body, headers, "pause NAS sync")
-                result = service.set_sync_state(sync_id, "paused")
-            else:
-                result = service.set_sync_state(sync_id, "running")
-            service.audit.record(
-                actor=actor,
-                role=role,
-                action=f"nas.sync.{action}",
-                resource=f"nas/sync/{sync_id}",
-                outcome="success",
-                request_id=request_id,
-            )
-            return result
-
-        if method == "POST" and len(parts) == 6 and parts[2] == "vpn" and parts[3] == "clients":
-            require_permission(principal, "vpn", "write")
-            client_id, action = parts[4], parts[5]
-            if action == "disconnect":
-                self.ensure_confirmation(body, headers, "disconnect VPN client")
-                result = service.disconnect_vpn_client(client_id)
-                service.audit.record(
-                    actor=actor,
-                    role=role,
-                    action="vpn.client.disconnect",
-                    resource=f"vpn/clients/{client_id}",
-                    outcome="success",
-                    request_id=request_id,
-                )
-                return result
-            if action == "config":
-                result = service.create_fake_vpn_config(client_id)
-                service.audit.record(
-                    actor=actor,
-                    role=role,
-                    action="vpn.client.config.generate",
-                    resource=f"vpn/clients/{client_id}",
-                    outcome="success",
-                    request_id=request_id,
-                )
-                return result
-
-        if len(parts) >= 6 and parts[2] == "docker" and parts[3] == "containers":
-            container_id = parts[4]
-            if method == "GET" and len(parts) == 6 and parts[5] == "logs":
-                return service.container_logs(container_id)
-            if method == "POST" and len(parts) == 6 and parts[5] in {"start", "stop", "restart"}:
-                require_permission(principal, "docker", "write")
-                action = parts[5]
-                if action in {"stop", "restart"}:
-                    self.ensure_confirmation(body, headers, f"{action} docker container")
-                result = service.change_container_state(container_id, action)
-                service.audit.record(
-                    actor=actor,
-                    role=role,
-                    action=f"docker.container.{action}",
-                    resource=f"docker/containers/{container_id}",
-                    outcome="success",
-                    request_id=request_id,
-                )
-                return result
-
-        if method == "POST" and len(parts) == 6 and parts[2] == "automation" and parts[3] == "tasks":
-            require_permission(principal, "automation", "write")
-            task_id, action = parts[4], parts[5]
-            if action == "run":
-                result = service.automation.run_task(task_id)
-            elif action == "pause":
-                self.ensure_confirmation(body, headers, "pause automation task")
-                result = service.automation.pause_task(task_id)
-            elif action == "resume":
-                result = service.automation.resume_task(task_id)
-            else:
-                raise NotFoundError("route", path)
-            service.audit.record(
-                actor=actor,
-                role=role,
-                action=f"automation.task.{action}",
-                resource=f"automation/tasks/{task_id}",
-                outcome="success",
-                request_id=request_id,
-            )
-            return result
 
         raise NotFoundError("route", path)
 

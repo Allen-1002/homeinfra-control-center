@@ -19,7 +19,7 @@ ROLE_LEVELS = {"viewer": 1, "auditor": 2, "operator": 3, "admin": 4}
 PERMISSION_SETS = {
     "viewer": {"devices:read", "groups:read", "alerts:read", "collections:read", "dashboard:read", "retention:read", "metrics:read"},
     "auditor": {"devices:read", "groups:read", "alerts:read", "collections:read", "dashboard:read", "retention:read", "metrics:read", "audit:read", "users:read"},
-    "operator": {"devices:*", "groups:*", "alerts:*", "collections:*", "dashboard:read", "retention:read", "metrics:read", "audit:read", "nas:*", "vpn:*", "docker:*", "automation:*"},
+    "operator": {"devices:*", "groups:*", "alerts:*", "collections:*", "dashboard:read", "retention:read", "metrics:read", "audit:read"},
     "admin": {"*:*"},
 }
 PASSWORD_ITERATIONS = 240_000

@@ -193,11 +193,7 @@ GET /api/v1/dashboard
     "health_score": 55
   },
   "monitoring": {},
-  "recent_audit": [],
-  "nas": {},
-  "vpn": {},
-  "docker": {},
-  "automation": {}
+  "recent_audit": []
 }
 ```
 
@@ -206,7 +202,7 @@ GET /api/v1/dashboard
 - `monitoring`
 - `recent_audit`
 
-主页面应以 `summary`、`monitoring`、`recent_audit` 为主，其他字段仅在后续功能扩展时评估是否使用。
+主页面应以 `summary`、`monitoring`、`recent_audit` 为主。
 
 ### 3.2 设备分组页
 
@@ -696,7 +692,7 @@ POST /api/v1/settings/retention/cleanup
 - 权限判断应完全以后端返回结果为准
 - 不要在前端保存密码、私钥、token 到业务数据结构里
 - 不要把本地 `localStorage` 当设备/分组主存储
-- 不要把旧的 `/vpn`、`/docker`、`/automation` 当主页面数据源
+- 不要依赖未在当前接口文档中定义的额外字段
 
 ## 5. 推荐前端状态流
 
@@ -721,18 +717,7 @@ POST /api/v1/settings/retention/cleanup
      - `/settings/retention`
      - `/audit`
 
-## 6. 当前仍然存在但应弱化的兼容接口
-
-这些接口后端还保留，但前端重构不建议继续作为主流程依赖：
-
-- `/nas`
-- `/nas/backup`
-- `/nas/sync/...`
-- `/vpn`
-- `/vpn/clients/...`
-- `/docker`
-- `/docker/containers/...`
-- `/automation`
+## 6. 推荐前端主流程依赖
 
 如果你要重构前端，建议直接围绕：
 
