@@ -1,0 +1,52 @@
+services:
+  infra-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: infra-platform:latest
+    container_name: infra-platform
+    restart: unless-stopped
+    environment:
+      APP_HOST: "${APP_HOST:-0.0.0.0}"
+      APP_PORT: "${APP_PORT:-8000}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      HOMEINFRA_DB_PATH: "${HOMEINFRA_DB_PATH:-/app/data/homeinfra.db}"
+      COLLECTOR_MODE: "${COLLECTOR_MODE:-disabled}"
+      SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-1}"
+      SSH_CONNECT_TIMEOUT: "${SSH_CONNECT_TIMEOUT:-10}"
+      SSH_RETRY_MAX: "${SSH_RETRY_MAX:-2}"
+      SSH_RETRY_BASE_DELAY: "${SSH_RETRY_BASE_DELAY:-1.0}"
+      SSH_KNOWN_HOSTS: "${SSH_KNOWN_HOSTS:-/app/ssh/known_hosts}"
+    ports:
+      - "${HOST_PORT:-8010}:${APP_PORT:-8000}"
+    volumes:
+      - infra_data:/app/data
+      - infra_logs:/app/logs
+      - "${HOMEINFRA_SSH_DIR:-./ssh}:/app/ssh:ro"
+      - "${HOMEINFRA_SSH_KEYS:-./ssh-keys}:/app/ssh-keys:ro"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    privileged: false
+    init: true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, urllib.request
+          port = os.getenv("APP_PORT", "8000")
+          urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/auth/bootstrap", timeout=2)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  infra_data:
+  infra_logs:
