@@ -58,6 +58,8 @@ http://127.0.0.1:8010/
 docker compose up --build
 ```
 
+默认 Compose 配置会使用 `HOST_BIND=127.0.0.1`，也就是只把 Web 入口发布到本机回环地址；如需改成其他监听地址，请显式覆盖 `HOST_BIND`。
+
 ## 配置说明
 
 重要默认项：
@@ -124,6 +126,8 @@ ssh-copy-id -i ./ssh-keys/id_ed25519.pub monitor@example-host
 python3 -m unittest -v
 node --check static/app.js
 ```
+
+仓库内也提供了对应的 GitHub Actions 基础 CI，默认执行与这里一致的 Python 测试、前端语法检查和编译检查。
 
 可选编译检查：
 

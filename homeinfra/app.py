@@ -29,6 +29,30 @@ from .persistence import SQLiteStore
 
 
 REQUEST_COUNTER = count(1)
+MAX_JSON_BODY_BYTES = 1_048_576
+
+
+def parse_json_object_body(raw: bytes, *, content_length: int) -> dict[str, Any]:
+    if content_length < 0:
+        raise ValidationError("Content-Length 非法", {"header": str(content_length)})
+    if content_length == 0:
+        return {}
+    if content_length > MAX_JSON_BODY_BYTES:
+        raise ApiError(
+            "payload_too_large",
+            f"JSON 请求体不能超过 {MAX_JSON_BODY_BYTES} 字节",
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            {"max_bytes": MAX_JSON_BODY_BYTES, "received_bytes": content_length},
+        )
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValidationError("JSON 请求体格式错误", {"reason": str(exc)}) from exc
+    if not isinstance(decoded, dict):
+        raise ValidationError("JSON 请求体必须是对象")
+    return decoded
 
 
 class HomeInfraApp:
@@ -137,9 +161,11 @@ class HomeInfraApp:
         headers: dict[str, str],
         body: dict[str, Any] | None = None,
         query: dict[str, list[str]] | None = None,
+        client_ip: str | None = None,
     ) -> tuple[dict[str, Any], str]:
         request_id = self.mark_request()
         lowered_headers = {key.lower(): value for key, value in headers.items()}
+        normalized_client_ip = self.extract_client_ip(lowered_headers, fallback=client_ip)
         principal = None
         try:
             principal = self.resolve_request_principal(method=method, path=path, headers=lowered_headers)
@@ -151,6 +177,7 @@ class HomeInfraApp:
                 principal=principal,
                 headers=lowered_headers,
                 request_id=request_id,
+                client_ip=normalized_client_ip,
             )
             return data, request_id
         except ApiError as exc:
@@ -188,6 +215,7 @@ class HomeInfraApp:
         principal,
         headers: dict[str, str],
         request_id: str,
+        client_ip: str | None = None,
     ) -> Any:
         service = self.service
         metrics = self.metrics
@@ -210,7 +238,7 @@ class HomeInfraApp:
             )
             return result
         if method == "POST" and path == "/api/v1/auth/login":
-            result = self.auth.login(body)
+            result = self.auth.login(body, client_ip=client_ip)
             service.audit.record(
                 actor=result["user"]["username"],
                 role=result["user"]["role"],
@@ -630,6 +658,9 @@ class HomeInfraApp:
             raise ValidationError("timeout 必须在 1-30 秒之间")
         return timeout
 
+    def extract_client_ip(self, headers: dict[str, str], *, fallback: str | None = None) -> str:
+        return (fallback or "unknown").strip() or "unknown"
+
 
 def create_server(
     host: str,
@@ -689,21 +720,16 @@ def create_server(
                 query = parse_qs(parsed.query)
                 body = self._parse_json_body()
                 headers = {key.lower(): value for key, value in self.headers.items()}
+                client_ip = self.app.extract_client_ip(headers, fallback=self.client_address[0] if self.client_address else None)
 
                 if path.startswith("/api/v1/"):
-                    principal = self.app.resolve_request_principal(
+                    data, request_id = self.app.handle_api_request(
                         method=method,
                         path=path,
                         headers=headers,
-                    )
-                    data = self.app.dispatch_api(
-                        method=method,
-                        path=path,
                         body=body,
                         query=query,
-                        principal=principal,
-                        headers=headers,
-                        request_id=request_id,
+                        client_ip=client_ip,
                     )
                     self._write_json(HTTPStatus.OK, json_envelope(data=data, meta={"request_id": request_id}))
                     return
@@ -711,13 +737,14 @@ def create_server(
                 self._serve_static(path)
             except ApiError as exc:
                 self.app.mark_error()
-                self.app.record_api_error(
-                    method=method,
-                    path=path,
-                    request_id=request_id,
-                    error=exc,
-                    principal=principal,
-                )
+                if not path.startswith("/api/v1/"):
+                    self.app.record_api_error(
+                        method=method,
+                        path=path,
+                        request_id=request_id,
+                        error=exc,
+                        principal=principal,
+                    )
                 self._write_json(
                     exc.status,
                     json_envelope(error=exc.to_payload(), meta={"request_id": request_id}),
@@ -736,19 +763,23 @@ def create_server(
                 )
 
         def _parse_json_body(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise ValidationError("Content-Length 非法", {"header": self.headers.get("Content-Length", "")}) from exc
+            if length < 0:
+                raise ValidationError("Content-Length 非法", {"header": str(length)})
             if length == 0:
                 return {}
+            if length > MAX_JSON_BODY_BYTES:
+                raise ApiError(
+                    "payload_too_large",
+                    f"JSON 请求体不能超过 {MAX_JSON_BODY_BYTES} 字节",
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    {"max_bytes": MAX_JSON_BODY_BYTES, "received_bytes": length},
+                )
             raw = self.rfile.read(length)
-            if not raw:
-                return {}
-            try:
-                decoded = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError as exc:
-                raise ValidationError("JSON 请求体格式错误", {"reason": str(exc)}) from exc
-            if not isinstance(decoded, dict):
-                raise ValidationError("JSON 请求体必须是对象")
-            return decoded
+            return parse_json_object_body(raw, content_length=length)
 
         def _serve_static(self, request_path: str) -> None:
             static_dir = self.app.static_dir

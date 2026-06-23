@@ -18,7 +18,7 @@ services:
       SSH_RETRY_BASE_DELAY: "${SSH_RETRY_BASE_DELAY:-1.0}"
       SSH_KNOWN_HOSTS: "${SSH_KNOWN_HOSTS:-/app/ssh/known_hosts}"
     ports:
-      - "${HOST_PORT:-8010}:${APP_PORT:-8000}"
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8010}:${APP_PORT:-8000}"
     volumes:
       - homeinfra_control_center_data:/app/data
       - homeinfra_control_center_logs:/app/logs

@@ -17,8 +17,9 @@
 
 - 密码使用 `hashlib.pbkdf2_hmac` + 随机 salt
 - 每个用户独立保存 `password_hash`、`password_salt`、`password_iterations`
-- 登录后签发高熵 Bearer Token
-- 会话持久化到 SQLite
+- 登录后签发高熵 Bearer Token，并在登录/初始化响应里返回给客户端一次
+- 会话在 SQLite 中只持久化 `token_hash`
+- 内置 HTTP 服务按直连客户端 IP + 用户名限速：5 分钟内失败 5 次后，会进入 5 分钟冷却
 - 禁用用户或重置密码时会撤销已有会话
 
 注意：
@@ -26,6 +27,7 @@
 - 当前是 Bearer Token，不是 cookie session
 - 当前没有 CSRF 机制，因为不是 cookie 模式
 - 当前不适合直接暴露到公网
+- 当前内置限速默认使用直连 socket IP，不信任客户端自行提交的代理头
 
 ## 权限
 
@@ -66,10 +68,16 @@
 - `password_salt`
 - `private_key_path`
 - `encrypted_private_key`
-- `token`
 - `token_hash`
 
 审计日志也会对敏感字段做脱敏。
+
+存储语义需要额外区分：
+
+- 用户登录密码不会明文持久化，只保存 `password_hash`、`password_salt`、`password_iterations`
+- Bearer Token 只在签发时返回给客户端，SQLite 中只保存 `token_hash`
+- 设备 SSH 凭据目前仍会落 SQLite：`password` 为应用可读明文，`private_key_path` 与 `encrypted_private_key` 按传入值持久化
+- 因此 API 脱敏不等于底层数据库不保存，数据库文件和备份仍应按敏感数据处理
 
 ## 历史记录与清理
 
@@ -92,7 +100,7 @@
 
 Compose 默认：
 
-- 绑定 `127.0.0.1`
+- 使用默认 `HOST_BIND=127.0.0.1` 时，只绑定到本机回环地址
 - `read_only: true`
 - `cap_drop: ALL`
 - `no-new-privileges: true`

@@ -7,11 +7,13 @@ import hmac
 import os
 import re
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from http import HTTPStatus
 from typing import Any
 
-from .errors import AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError
+from .errors import ApiError, AuthError, ConflictError, ForbiddenError, NotFoundError, ValidationError
 from .mock_data import isoformat, utc_now
 
 
@@ -27,6 +29,9 @@ PASSWORD_MIN_LENGTH = 8
 SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_SESSIONS = 500
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
+FAILED_LOGIN_WINDOW_SECONDS = 5 * 60
+FAILED_LOGIN_LIMIT = 5
+FAILED_LOGIN_COOLDOWN_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,8 @@ def _parse_timestamp(raw: str | None):
 class AuthService:
     def __init__(self, store) -> None:
         self.store = store
+        self._failed_login_lock = threading.Lock()
+        self._failed_login_state: dict[tuple[str, str], dict[str, Any]] = {}
 
     def bootstrap_status(self) -> dict[str, Any]:
         users = self.store.read("users")
@@ -83,18 +90,26 @@ class AuthService:
             )
         )
 
-    def login(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def login(self, payload: dict[str, Any], *, client_ip: str | None = None) -> dict[str, Any]:
         username = self._normalize_username(payload.get("username"))
+        rate_limit_key = self._rate_limit_key(client_ip, username)
+        self._ensure_login_not_rate_limited(rate_limit_key)
         password = self._normalize_password(payload.get("password"))
         token = self._generate_token()
-        return self.store.update(
-            lambda state: self._login_mutate(
-                state,
-                username=username,
-                password=password,
-                token=token,
+        try:
+            result = self.store.update(
+                lambda state: self._login_mutate(
+                    state,
+                    username=username,
+                    password=password,
+                    token=token,
+                )
             )
-        )
+        except AuthError:
+            self._record_failed_login(rate_limit_key)
+            raise
+        self._clear_failed_login(rate_limit_key)
+        return result
 
     def logout(self, session_id: str) -> dict[str, Any]:
         return self.store.update(lambda state: self._logout_mutate(state, session_id=session_id))
@@ -419,6 +434,60 @@ class AuthService:
 
     def _generate_token(self) -> str:
         return secrets.token_urlsafe(32)
+
+    def _rate_limit_key(self, client_ip: str | None, username: str) -> tuple[str, str]:
+        return ((client_ip or "unknown").strip() or "unknown", username.casefold())
+
+    def _ensure_login_not_rate_limited(self, key: tuple[str, str]) -> None:
+        now = utc_now()
+        with self._failed_login_lock:
+            self._prune_failed_login_state(now)
+            state = self._failed_login_state.get(key)
+            cooldown_until = state.get("cooldown_until") if state else None
+            if cooldown_until and cooldown_until > now:
+                retry_after = max(1, int((cooldown_until - now).total_seconds()))
+                raise ApiError(
+                    "rate_limited",
+                    "登录失败次数过多，请 5 分钟后再试",
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    {"retry_after_seconds": retry_after},
+                )
+
+    def _record_failed_login(self, key: tuple[str, str]) -> None:
+        now = utc_now()
+        with self._failed_login_lock:
+            self._prune_failed_login_state(now)
+            state = self._failed_login_state.setdefault(key, {"failures": [], "cooldown_until": None})
+            failures = [
+                failure_at
+                for failure_at in state.get("failures", [])
+                if (now - failure_at).total_seconds() <= FAILED_LOGIN_WINDOW_SECONDS
+            ]
+            failures.append(now)
+            state["failures"] = failures
+            if len(failures) >= FAILED_LOGIN_LIMIT:
+                state["cooldown_until"] = now + timedelta(seconds=FAILED_LOGIN_COOLDOWN_SECONDS)
+
+    def _clear_failed_login(self, key: tuple[str, str]) -> None:
+        with self._failed_login_lock:
+            self._failed_login_state.pop(key, None)
+
+    def _prune_failed_login_state(self, now: datetime) -> None:
+        for key in list(self._failed_login_state):
+            state = self._failed_login_state[key]
+            failures = [
+                failure_at
+                for failure_at in state.get("failures", [])
+                if (now - failure_at).total_seconds() <= FAILED_LOGIN_WINDOW_SECONDS
+            ]
+            cooldown_until = state.get("cooldown_until")
+            if cooldown_until and cooldown_until <= now:
+                cooldown_until = None
+            if failures or cooldown_until:
+                state["failures"] = failures
+                state["cooldown_until"] = cooldown_until
+            else:
+                self._failed_login_state.pop(key, None)
 
 
 def require_role(principal: Principal | None, minimum_role: str) -> None:
