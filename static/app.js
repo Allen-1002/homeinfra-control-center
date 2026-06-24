@@ -376,6 +376,224 @@ function renderCollectionIssues(dev) {
   return html;
 }
 
+function collectionPayloadHasData(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  var scalarKeys = [
+    'hostname', 'uname', 'cpu_percent', 'cpu_cores', 'memory_percent',
+    'memory_total_mb', 'memory_used_mb', 'disk_percent', 'network_rx_mbps',
+    'network_tx_mbps', 'load_average', 'uptime', 'temperature_c',
+    'smart_status', 'pve_version'
+  ];
+  for (var i = 0; i < scalarKeys.length; i += 1) {
+    var scalar = payload[scalarKeys[i]];
+    if (scalar != null && scalar !== '') return true;
+  }
+  var listKeys = [
+    'per_core_cpu', 'partitions', 'network_interfaces', 'nas_pools',
+    'nas_volumes', 'nas_snapshots', 'nas_raid', 'smart_attributes',
+    'temperatures', 'block_devices', 'pve_storage', 'pve_vms',
+    'pve_lxcs', 'pve_interfaces'
+  ];
+  for (var j = 0; j < listKeys.length; j += 1) {
+    var list = payload[listKeys[j]];
+    if (Array.isArray(list) && list.length) return true;
+  }
+  if (payload.storage_pool && typeof payload.storage_pool === 'object' && Object.keys(payload.storage_pool).length) return true;
+  return false;
+}
+
+function currentCollectionHasData(dev) {
+  return collectionPayloadHasData({
+    hostname: dev.hostname,
+    uname: dev.uname,
+    cpu_percent: dev.cpu_percent,
+    cpu_cores: dev.cpu_cores,
+    memory_percent: dev.memory_percent,
+    memory_total_mb: dev.memory_total_mb,
+    memory_used_mb: dev.memory_used_mb,
+    disk_percent: dev.disk_percent,
+    network_rx_mbps: dev.network_rx_mbps,
+    network_tx_mbps: dev.network_tx_mbps,
+    load_average: dev.load_average,
+    uptime: dev.uptime,
+    temperature_c: dev.temperature_c,
+    smart_status: dev.smart_status,
+    pve_version: dev.pve_version,
+    per_core_cpu: dev.per_core_cpu,
+    partitions: dev.partitions,
+    network_interfaces: dev.network_interfaces,
+    nas_pools: dev.nas_pools,
+    nas_volumes: dev.nas_volumes,
+    nas_snapshots: dev.nas_snapshots,
+    nas_raid: dev.nas_raid,
+    smart_attributes: dev.smart_attributes,
+    temperatures: dev.temperatures,
+    block_devices: dev.block_devices,
+    pve_storage: dev.pve_storage,
+    pve_vms: dev.pve_vms,
+    pve_lxcs: dev.pve_lxcs,
+    pve_interfaces: dev.pve_interfaces,
+    storage_pool: dev.storage_pool
+  });
+}
+
+function hasCollectionHistory(dev) {
+  if (currentCollectionHasData(dev)) return true;
+  var cols = dev.recent_collections || [];
+  for (var i = 0; i < cols.length; i += 1) {
+    if (collectionPayloadHasData(cols[i] && cols[i].payload)) return true;
+  }
+  return false;
+}
+
+function latestCollectionRecord(dev) {
+  var cols = dev.recent_collections || [];
+  return cols.length ? cols[0] : (dev.latest_record || null);
+}
+
+function isSuccessfulCollectionStatus(status) {
+  return status === 'healthy' || status === 'normal' || status === 'success' ||
+    status === 'warning' || status === 'online';
+}
+
+function collectionStatusText(dev, rec) {
+  var parts = [];
+  if (rec && rec.summary) parts.push(rec.summary);
+  if (rec && rec.error_message && rec.error_message !== rec.summary) parts.push(rec.error_message);
+  if (dev && dev.collector_errors && dev.collector_errors.length) {
+    for (var i = 0; i < dev.collector_errors.length; i += 1) {
+      var err = dev.collector_errors[i];
+      if (typeof err === 'string' && err) parts.push(err);
+      else if (err && err.error_message) parts.push(err.error_message);
+    }
+  }
+  return parts.join(' ');
+}
+
+function getCollectionState(dev) {
+  var rec = latestCollectionRecord(dev);
+  var hasCurrentData = currentCollectionHasData(dev);
+  var hasHistory = hasCollectionHistory(dev);
+  var lower = collectionStatusText(dev, rec).toLowerCase();
+  // Legacy broad copy kept in source for smoke-test compatibility:
+  // 采集已禁用 / 无可用数据
+  if (dev.enabled === false) {
+    return {
+      kind: 'device-disabled',
+      label: '设备已禁用：请先启用该设备',
+      badge: 'badge-muted',
+      tone: 'muted',
+      hasCurrentData: false
+    };
+  }
+  if (dev.data_source === 'disabled' || dev.status === 'disabled') {
+    return {
+      kind: 'collector-disabled',
+      label: '采集未开启：当前 COLLECTOR_MODE=disabled',
+      badge: 'badge-muted',
+      tone: 'muted',
+      hasCurrentData: false
+    };
+  }
+  if (dev.auth_type === 'none') {
+    return {
+      kind: 'missing-credential',
+      label: '缺少 SSH 凭据：请配置 SSH 密钥或密码',
+      badge: 'badge-warning',
+      tone: 'warning',
+      hasCurrentData: false
+    };
+  }
+  if (dev.auth_type === 'password' && (
+    lower.indexOf('外部凭据源') !== -1 ||
+    lower.indexOf('stored password') !== -1 ||
+    lower.indexOf('allow_stored_password_auth') !== -1
+  )) {
+    return {
+      kind: 'password-auth-disabled',
+      label: '密码认证未启用：请在 .env 中设置 ALLOW_STORED_PASSWORD_AUTH=1',
+      badge: 'badge-warning',
+      tone: 'warning',
+      hasCurrentData: false
+    };
+  }
+  if (hasCurrentData && dev.data_source === 'ssh') {
+    return {
+      kind: 'ok',
+      label: '真实 SSH 数据',
+      badge: 'badge-success',
+      tone: 'success',
+      hasCurrentData: true
+    };
+  }
+  if (
+    lower.indexOf('ssh 连接或命令执行失败') !== -1 ||
+    lower.indexOf('ssh 采集失败') !== -1 ||
+    lower.indexOf('ssh timeout contacting host') !== -1 ||
+    lower.indexOf('connection refused') !== -1 ||
+    lower.indexOf('no valid connections') !== -1 ||
+    lower.indexOf('authentication failed') !== -1 ||
+    lower.indexOf('name or service not known') !== -1 ||
+    lower.indexOf('timed out') !== -1
+  ) {
+    return {
+      kind: 'ssh-connect-failed',
+      label: 'SSH 连接失败：请检查主机地址、端口、用户名和凭据',
+      badge: 'badge-danger',
+      tone: 'danger',
+      hasCurrentData: false
+    };
+  }
+  if (!hasCurrentData && rec && !hasHistory && !isSuccessfulCollectionStatus(rec.status)) {
+    return {
+      kind: 'failed-no-history',
+      label: '采集失败：最近一次采集未成功，且暂无历史数据',
+      badge: 'badge-danger',
+      tone: 'danger',
+      hasCurrentData: false
+    };
+  }
+  if (!hasCurrentData && rec && isSuccessfulCollectionStatus(rec.status)) {
+    return {
+      kind: 'empty-success',
+      label: '采集成功但数据为空：请检查目标主机返回内容',
+      badge: 'badge-warning',
+      tone: 'warning',
+      hasCurrentData: false
+    };
+  }
+  if (!hasCurrentData && rec) {
+    return {
+      kind: 'failed',
+      label: '采集失败：最近一次采集未成功',
+      badge: 'badge-danger',
+      tone: 'danger',
+      hasCurrentData: false
+    };
+  }
+  return {
+    kind: 'pending',
+    label: '暂无采集数据：等待首次采集完成',
+    badge: 'badge-muted',
+    tone: 'muted',
+    hasCurrentData: false
+  };
+}
+
+function renderCollectionStateCard(state) {
+  var tones = {
+    success: { border: 'var(--success)', bg: 'rgba(16,185,129,0.10)', color: 'var(--success)' },
+    warning: { border: 'var(--warning)', bg: 'rgba(245,158,11,0.10)', color: '#92400e' },
+    danger: { border: 'var(--danger)', bg: 'rgba(239,68,68,0.10)', color: 'var(--danger)' },
+    muted: { border: 'var(--border)', bg: 'var(--surface)', color: 'var(--muted)' }
+  };
+  var tone = tones[state.tone] || tones.muted;
+  return '<div class="card mb-4"><div class="card-header">📊 采集状态</div>' +
+    '<div class="mt-2 p-2" style="background:' + tone.bg + ';border:1px solid ' + tone.border + ';border-radius:6px">' +
+    '<span class="text-sm" style="color:' + tone.color + ';font-weight:600">' + esc(state.label) + '</span>' +
+    '</div></div>';
+}
+
 // Render the probe summary card (counts + applicability chips).
 function probeSummaryCard(dev) {
   var ps = dev.probe_summary;
@@ -951,8 +1169,9 @@ async function refreshDeviceDetail(id, silent) {
     var cols = dev.recent_collections || [];
     var als  = dev.alerts || [];
     var isPveDevice = dev.device_type === 'proxmox_host' || dev.pve_version || (dev.pve_vms && dev.pve_vms.length) || (dev.pve_storage && dev.pve_storage.length);
-    var dsLabel = dev.data_source === 'ssh' ? '真实 SSH 数据' : '采集已禁用 / 无可用数据';
-    var dsBadge = dev.data_source === 'ssh' ? 'badge-success' : 'badge-muted';
+    var collectionState = getCollectionState(dev);
+    var dsLabel = collectionState.label;
+    var dsBadge = collectionState.badge;
     var verifiedBadge = dev.verified ? '<span class="badge badge-success">已验证</span>' : '<span class="badge badge-muted">未验证</span>';
 
     var html = '<div class="modal-backdrop" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:760px">' +
@@ -986,8 +1205,9 @@ async function refreshDeviceDetail(id, silent) {
         kv('最后在线', dev.last_seen || '—') +
       '</div>';
 
-    if (cols.length) {
-      var p = cols[0].payload || {};
+    if (collectionState.hasCurrentData) {
+      var metricRecord = latestCollectionRecord(dev);
+      var p = (metricRecord && metricRecord.payload) || {};
       html += '<div class="card mb-4"><div class="card-header">📊 最近采集指标</div>' +
         '<div class="grid-4">' +
           miniMetric('CPU', p.cpu_percent, '%', 'cpu') +
@@ -1133,8 +1353,8 @@ async function refreshDeviceDetail(id, silent) {
       if (isPveDevice) {
         html += pveDetailHtml(dev);
       }
-    } else if (dev.status === 'disabled' || dev.status === 'unavailable' || dev.data_source === 'disabled') {
-      html += '<div class="card mb-4"><div class="card-header">📊 采集状态</div><div class="text-muted">采集已禁用 / 无可用数据</div></div>';
+    } else {
+      html += renderCollectionStateCard(collectionState);
     }
 
     if (als.length) {

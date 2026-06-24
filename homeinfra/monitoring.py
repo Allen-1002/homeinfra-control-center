@@ -8,7 +8,13 @@ from datetime import datetime
 from typing import Any
 
 from .collector_service import CollectorService
-from .collectors import CollectorError, DisabledCollector, MockCommandCollector, EXTERNAL_SECRET_SENTINEL
+from .collectors import (
+    CollectorError,
+    DisabledCollector,
+    MockCommandCollector,
+    EXTERNAL_SECRET_SENTINEL,
+    allow_stored_password_auth,
+)
 from .errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from .mock_data import isoformat, utc_now
 
@@ -48,6 +54,37 @@ CONNECTION_RELATED_FIELDS = {
     "encrypted_private_key",
 }
 
+OBSERVABLE_COLLECTION_KEYS = (
+    "hostname",
+    "uname",
+    "cpu_percent",
+    "cpu_cores",
+    "memory_percent",
+    "memory_total_mb",
+    "memory_used_mb",
+    "disk_percent",
+    "network_rx_mbps",
+    "network_tx_mbps",
+    "load_average",
+    "uptime",
+    "partitions",
+    "network_interfaces",
+    "block_devices",
+    "nas_pools",
+    "nas_volumes",
+    "nas_snapshots",
+    "nas_raid",
+    "btrfs_filesystems",
+    "btrfs_device_stats",
+    "btrfs_usage",
+    "pve_version",
+    "pve_storage",
+    "pve_vms",
+    "pve_lxcs",
+    "pve_interfaces",
+    "docker_info",
+)
+
 
 def _slugify(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
@@ -76,6 +113,41 @@ def _next_numbered_id(prefix: str, items: list[dict[str, Any]]) -> str:
         except ValueError:
             continue
     return f"{prefix}-{highest + 1:05d}"
+
+
+def _has_observable_collection_data(payload: dict[str, Any]) -> bool:
+    for key in OBSERVABLE_COLLECTION_KEYS:
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (list, dict)) and not value:
+            continue
+        return True
+    return False
+
+
+def _is_successful_collection_record(record: dict[str, Any]) -> bool:
+    return record.get("error_message") in {None, ""}
+
+
+def _enrich_collection_record(record: dict[str, Any]) -> dict[str, Any]:
+    enriched = deepcopy(record)
+    payload = enriched.get("payload", {}) or {}
+    if "detail_code" not in enriched:
+        enriched["detail_code"] = payload.get("__collection_detail_code") or (
+            "collection_failed" if enriched.get("error_message") else "collection_succeeded"
+        )
+    if "detail_message" not in enriched:
+        enriched["detail_message"] = payload.get("__collection_detail_message") or (
+            enriched.get("error_message") or enriched.get("summary")
+        )
+    if "data_source" not in enriched and payload.get("__data_source") is not None:
+        enriched["data_source"] = payload.get("__data_source")
+    if "is_real_data" not in enriched and payload.get("__is_real_data") is not None:
+        enriched["is_real_data"] = payload.get("__is_real_data")
+    return enriched
 
 
 def monitoring_penalty(*, offline: int, warning: int, alerts: int) -> int:
@@ -528,7 +600,7 @@ class MonitoringService:
         device = self._find_device(snapshot, device_id)
         payload = self._public_device(device, snapshot=snapshot)
         payload["recent_collections"] = [
-            deepcopy(record)
+            _enrich_collection_record(record)
             for record in snapshot["collection_records"]
             if record["device_id"] == device_id
         ][:10]
@@ -675,7 +747,7 @@ class MonitoringService:
                 if self._parse_iso_timestamp(record.get("collected_at")) is None
                 or self._parse_iso_timestamp(record.get("collected_at")) <= until_dt
             ]
-        return {"records": deepcopy(records[:limit])}
+        return {"records": [_enrich_collection_record(record) for record in records[:limit]]}
 
     def list_alerts(self, filters: dict[str, Any] | None = None) -> dict[str, Any]:
         filters = filters or {}
@@ -756,8 +828,10 @@ class MonitoringService:
             raise ValidationError("timeout 必须大于 0")
         if self.collector_service is None:
             raise ValidationError("采集器未配置")
-        if isinstance(self.collector_service.collector, DisabledCollector) or device.get("status") == "disabled":
-            raise ValidationError("采集已禁用，当前无可用数据")
+        if isinstance(self.collector_service.collector, DisabledCollector):
+            raise ValidationError("全局采集已禁用，当前无可用数据")
+        if device.get("status") == "disabled":
+            raise ValidationError("设备采集已禁用，当前无可用数据")
 
         try:
             result = self.collector_service.collect(device, timeout=timeout, purpose=purpose)
@@ -785,8 +859,13 @@ class MonitoringService:
         now = isoformat(utc_now())
         device = self._find_device(state, device_id)
         payload = dict(result.payload)
+        has_observable_data = _has_observable_collection_data(payload)
         payload["__data_source"] = result.data_source
         payload["__is_real_data"] = result.is_real_data
+        payload["__collection_empty"] = not has_observable_data
+        payload["__collection_detail_code"] = (
+            "collection_succeeded_empty" if not has_observable_data else "collection_succeeded"
+        )
         record = {
             "id": _next_numbered_id("col", state["collection_records"]),
             "device_id": device_id,
@@ -800,6 +879,8 @@ class MonitoringService:
             "summary": result.summary,
             "payload": payload,
             "error_message": None,
+            "detail_code": "collection_succeeded_empty" if not has_observable_data else "collection_succeeded",
+            "detail_message": "采集成功但未返回可展示数据" if not has_observable_data else result.summary,
             "data_source": result.data_source,
             "is_real_data": result.is_real_data,
         }
@@ -823,6 +904,7 @@ class MonitoringService:
     def _apply_collection_failure(self, state, *, device_id: str, error: CollectorError, purpose: str, metric_name: str):
         now = isoformat(utc_now())
         device = self._find_device(state, device_id)
+        detail_code = error.reason or "collection_failed"
         record = {
             "id": _next_numbered_id("col", state["collection_records"]),
             "device_id": device_id,
@@ -834,8 +916,16 @@ class MonitoringService:
             "collected_at": now,
             "status": error.status,
             "summary": error.message,
-            "payload": {"purpose": purpose},
+            "payload": {
+                "purpose": purpose,
+                "__collection_detail_code": detail_code,
+                "__collection_detail_message": error.message,
+            },
             "error_message": error.message,
+            "detail_code": detail_code,
+            "detail_message": error.message,
+            "data_source": getattr(self.collector_service, "_data_source", "unknown"),
+            "is_real_data": getattr(self.collector_service, "_is_real_data", False),
         }
         state["collection_records"].insert(0, record)
         state["collection_records"] = state["collection_records"][:5000]
@@ -982,6 +1072,44 @@ class MonitoringService:
                 return device
         raise NotFoundError("device", device_id)
 
+    def _runtime_collection_mode(self) -> str:
+        if self.collector_service is None:
+            return "unknown"
+        if isinstance(self.collector_service.collector, DisabledCollector):
+            return "disabled"
+        return "ssh"
+
+    def _credential_detail(self, device: dict[str, Any]) -> tuple[str, str, str] | None:
+        auth_type = device.get("auth_type", "none")
+        if auth_type == "password":
+            password = device.get("password")
+            if password in {None, "", EXTERNAL_SECRET_SENTINEL}:
+                return (
+                    "credential_missing",
+                    "missing_ssh_credential",
+                    "密码认证需要提供 SSH 凭据",
+                )
+            if not allow_stored_password_auth():
+                return (
+                    "password_auth_blocked",
+                    "password_auth_disabled",
+                    "密码认证已被配置禁用；如需启用，请设置 ALLOW_STORED_PASSWORD_AUTH=1",
+                )
+            return None
+        if auth_type == "private_key":
+            if not device.get("private_key_path"):
+                return (
+                    "credential_missing",
+                    "missing_ssh_credential",
+                    "使用私钥认证时必须提供 SSH 私钥路径",
+                )
+            return None
+        return (
+            "credential_missing",
+            "missing_ssh_credential",
+            "未配置可用的 SSH 凭据",
+        )
+
     def _ensure_group_exists(self, state: dict[str, Any], group_id: str | None) -> None:
         if not group_id:
             raise ValidationError("group_id 不能为空")
@@ -997,15 +1125,19 @@ class MonitoringService:
         payload["collection_interval"] = payload.get("collection_interval", payload.get("poll_interval", 60))
         payload["verified"] = bool(payload.get("verified", False))
         if snapshot is not None:
+            runtime_mode = self._runtime_collection_mode()
+            device_records = [
+                record for record in snapshot["collection_records"] if record["device_id"] == payload["id"]
+            ]
+            successful_records = [
+                record for record in device_records if _is_successful_collection_record(record)
+            ]
             try:
                 group = self._find_group(snapshot, payload["group_id"])
                 payload["group"] = {"id": group["id"], "name": group["name"]}
             except NotFoundError:
                 payload["group"] = {"id": payload.get("group_id"), "name": "未分组"}
-            latest_record = next(
-                (record for record in snapshot["collection_records"] if record["device_id"] == payload["id"]),
-                None,
-            )
+            latest_record = _enrich_collection_record(device_records[0]) if device_records else None
             if latest_record:
                 latest_payload = latest_record.get("payload", {})
                 payload["latest_record"] = deepcopy(latest_record)
@@ -1069,6 +1201,54 @@ class MonitoringService:
                 payload["unavailable_indicators"] = []
                 payload["not_applicable_indicators"] = []
                 payload["probe_summary"] = {}
+            payload["collection_runtime_mode"] = runtime_mode
+            payload["allow_stored_password_auth"] = allow_stored_password_auth()
+            payload["has_collection_history"] = bool(device_records)
+            payload["has_successful_collection_history"] = bool(successful_records)
+            payload["last_successful_collection_at"] = (
+                successful_records[0].get("collected_at") if successful_records else None
+            )
+            if runtime_mode == "disabled":
+                payload["collection_state"] = "global_disabled"
+                payload["collection_detail_code"] = "global_collector_disabled"
+                payload["collection_detail_message"] = "全局采集已禁用"
+            elif payload.get("status") == "disabled":
+                payload["collection_state"] = "device_disabled"
+                payload["collection_detail_code"] = "device_disabled"
+                payload["collection_detail_message"] = "设备采集已禁用"
+            else:
+                credential_detail = self._credential_detail(device)
+                if credential_detail is not None:
+                    state_name, detail_code, detail_message = credential_detail
+                    payload["collection_state"] = state_name
+                    payload["collection_detail_code"] = detail_code
+                    payload["collection_detail_message"] = detail_message
+                elif latest_record and latest_record.get("error_message"):
+                    payload["collection_state"] = "failed"
+                    payload["collection_detail_code"] = latest_record.get("detail_code", "collection_failed")
+                    payload["collection_detail_message"] = (
+                        latest_record.get("detail_message")
+                        or latest_record.get("error_message")
+                        or latest_record.get("summary")
+                    )
+                    if not successful_records:
+                        payload["collection_history_state"] = "failed_no_history"
+                elif latest_record and latest_record.get("detail_code") == "collection_succeeded_empty":
+                    payload["collection_state"] = "succeeded_empty"
+                    payload["collection_detail_code"] = "collection_succeeded_empty"
+                    payload["collection_detail_message"] = latest_record.get(
+                        "detail_message",
+                        "采集成功但未返回可展示数据",
+                    )
+                elif latest_record:
+                    payload["collection_state"] = "succeeded"
+                    payload["collection_detail_code"] = latest_record.get("detail_code", "collection_succeeded")
+                    payload["collection_detail_message"] = latest_record.get("detail_message", "采集成功")
+                else:
+                    payload["collection_state"] = "no_history"
+                    payload["collection_detail_code"] = "no_collection_history"
+                    payload["collection_detail_message"] = "设备尚无可用采集历史"
+                    payload["collection_history_state"] = "no_history"
             # Surface derived health/online status (additive, backward compatible)
             payload["health_status"] = payload.get("health_status") or (
                 "critical" if payload.get("status") == "offline"
@@ -1260,7 +1440,8 @@ class MonitoringService:
     def _normalize_stored_credentials(self, payload: dict[str, Any]) -> None:
         auth_type = payload.get("auth_type")
         if auth_type == "password":
-            payload["password"] = EXTERNAL_SECRET_SENTINEL if payload.get("password") else None
+            if payload.get("password") in {None, ""}:
+                payload["password"] = None
             payload["private_key_path"] = None
             payload["inline_private_key"] = None
             payload["encrypted_private_key"] = None

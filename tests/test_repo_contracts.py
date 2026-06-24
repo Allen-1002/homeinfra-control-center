@@ -1,8 +1,10 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from homeinfra.app import HomeInfraApp, MAX_JSON_BODY_BYTES, parse_json_object_body
 from homeinfra.errors import ApiError
+from run import parse_args
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -11,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class RepoContractTests(unittest.TestCase):
     def test_docker_compose_uses_host_bind_in_ports(self):
         compose_text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        self.assertIn('${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8010}:${APP_PORT:-8000}', compose_text)
+        self.assertIn('${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8010}:${APP_PORT:-8000}', compose_text)
 
     def test_dockerfile_uses_runtime_env_for_app_host_and_port(self):
         dockerfile_text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
@@ -21,9 +23,25 @@ class RepoContractTests(unittest.TestCase):
     def test_env_example_documents_container_and_host_bind_separately(self):
         env_text = (ROOT / ".env.example").read_text(encoding="utf-8")
         self.assertIn("APP_HOST=0.0.0.0", env_text)
-        self.assertIn("HOST_BIND=127.0.0.1", env_text)
+        self.assertIn("HOST_BIND=0.0.0.0", env_text)
         self.assertIn("Container listen address", env_text)
         self.assertIn("Host-side bind address", env_text)
+
+    def test_repo_defaults_match_personal_lan_setup(self):
+        env_text = (ROOT / ".env.example").read_text(encoding="utf-8")
+        compose_text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("COLLECTOR_MODE=ssh", env_text)
+        self.assertIn("ALLOW_STORED_PASSWORD_AUTH=1", env_text)
+        self.assertIn("SSH_AUTO_ACCEPT_HOST_KEY=1", env_text)
+        self.assertIn('COLLECTOR_MODE: "${COLLECTOR_MODE:-ssh}"', compose_text)
+        self.assertIn('ALLOW_STORED_PASSWORD_AUTH: "${ALLOW_STORED_PASSWORD_AUTH:-1}"', compose_text)
+        self.assertIn('SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-1}"', compose_text)
+
+    def test_run_py_defaults_to_personal_lan_friendly_collector_mode(self):
+        with patch.dict("os.environ", {}, clear=True), patch("sys.argv", ["run.py"]):
+            args = parse_args()
+        self.assertEqual(args.collector_mode, "ssh")
+        self.assertTrue(args.ssh_auto_accept_host_key)
 
     def test_github_actions_ci_file_exists(self):
         workflow_path = ROOT / ".github" / "workflows" / "ci.yml"

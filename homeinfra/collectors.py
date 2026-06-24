@@ -18,6 +18,13 @@ logger = logging.getLogger("homeinfra.collectors")
 EXTERNAL_SECRET_SENTINEL = "__external_secret__"
 
 
+def allow_stored_password_auth() -> bool:
+    raw = os.getenv("ALLOW_STORED_PASSWORD_AUTH")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ── Command whitelist (read-only, expanded per device type) ──────
 
 BANNED_COMMAND_TOKENS = (
@@ -140,10 +147,19 @@ class RetryStrategy:
 # ── Collector error ────────────────────────────────────────────
 
 class CollectorError(Exception):
-    def __init__(self, message: str, *, status: str = "critical") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: str = "critical",
+        reason: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.status = status
+        self.reason = reason
+        self.details = dict(details or {})
 
 
 # ── Base collector ─────────────────────────────────────────────
@@ -171,7 +187,11 @@ class DisabledCollector(BaseSSHCollector):
     def execute_commands(
         self, device: dict[str, Any], probes: list[tuple[str, str]], *, timeout: int
     ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-        raise CollectorError("采集已禁用", status="disabled")
+        raise CollectorError(
+            "采集已禁用",
+            status="disabled",
+            reason="global_collector_disabled",
+        )
 
 
 # ── Mock command collector ─────────────────────────────────────
@@ -464,11 +484,14 @@ class ParamikoSSHCollector(BaseSSHCollector):
                 raise CollectorError(
                     "使用私钥认证时必须提供 SSH 私钥路径",
                     status="warning",
+                    reason="missing_ssh_credential",
                 )
             expanded = os.path.expanduser(private_key_path)
             if not os.path.exists(expanded):
                 raise CollectorError(
-                    "SSH 私钥文件不存在或不可访问", status="warning"
+                    "SSH 私钥文件不存在或不可访问",
+                    status="warning",
+                    reason="missing_ssh_credential",
                 )
             connect_kwargs["key_filename"] = expanded
         else:
@@ -477,10 +500,19 @@ class ParamikoSSHCollector(BaseSSHCollector):
                 raise CollectorError(
                     "密码认证需要通过外部凭据源提供 SSH 凭据",
                     status="warning",
+                    reason="missing_ssh_credential",
                 )
             if not password:
                 raise CollectorError(
-                    "密码认证需要提供 SSH 凭据", status="warning"
+                    "密码认证需要提供 SSH 凭据",
+                    status="warning",
+                    reason="missing_ssh_credential",
+                )
+            if not allow_stored_password_auth():
+                raise CollectorError(
+                    "密码认证已被配置禁用；如需启用，请设置 ALLOW_STORED_PASSWORD_AUTH=1",
+                    status="warning",
+                    reason="password_auth_disabled",
                 )
             connect_kwargs["password"] = password
         return connect_kwargs
@@ -595,7 +627,10 @@ class ParamikoSSHCollector(BaseSSHCollector):
             raise
         except Exception as exc:
             raise CollectorError(
-                f"SSH 连接或命令执行失败: {exc}", status="critical"
+                f"SSH 连接或命令执行失败: {exc}",
+                status="critical",
+                reason="ssh_connection_failed",
+                details={"exception_type": type(exc).__name__},
             ) from exc
         finally:
             try:

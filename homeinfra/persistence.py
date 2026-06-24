@@ -10,7 +10,6 @@ from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
-from .collectors import EXTERNAL_SECRET_SENTINEL
 from .mock_data import build_empty_state, build_initial_state
 
 STATE_KEYS = (
@@ -31,8 +30,8 @@ STATE_KEYS = (
 def _normalize_loaded_device_credentials(device: dict[str, Any]) -> None:
     auth_type = device.get("auth_type", "none")
     if auth_type == "password":
-        if device.get("password"):
-            device["password"] = EXTERNAL_SECRET_SENTINEL
+        if device.get("password") in {"", None}:
+            device["password"] = None
         device["private_key_path"] = None
     elif auth_type == "private_key":
         device["password"] = None
@@ -264,19 +263,16 @@ class SQLiteStore:
             conn.execute("ALTER TABLE devices ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
 
     def _scrub_legacy_plaintext_credentials(self, conn: sqlite3.Connection) -> None:
-        """Non-destructive migration: clear any plaintext SSH credentials that
-        pre-date the external-secret model so legacy DB files no longer retain
-        them. Password-auth devices keep the sentinel marker (credential must be
-        supplied by an external source); other auth types are NULLed out. Legacy
-        inline key material (``encrypted_private_key``) is always NULLed."""
+        """Schema hygiene for historical device rows.
+
+        Non-password auth rows should not retain stray passwords. Legacy inline
+        key material (``encrypted_private_key``) is always NULLed. Password-auth
+        rows keep their stored password so the runtime gate can decide whether
+        stored password auth is permitted.
+        """
         conn.execute(
             "UPDATE devices SET password = NULL "
             "WHERE auth_type != 'password' AND password IS NOT NULL"
-        )
-        conn.execute(
-            "UPDATE devices SET password = ? "
-            "WHERE auth_type = 'password' AND password IS NOT NULL AND password != ?",
-            (EXTERNAL_SECRET_SENTINEL, EXTERNAL_SECRET_SENTINEL),
         )
         conn.execute(
             "UPDATE devices SET encrypted_private_key = NULL "
