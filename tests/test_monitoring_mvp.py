@@ -3,9 +3,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from homeinfra.app import HomeInfraApp
-from homeinfra.collectors import MockCommandCollector, BaseSSHCollector, MOCK_FIXTURES, CollectorError, ParamikoSSHCollector, EXTERNAL_SECRET_SENTINEL
+from homeinfra.collectors import MockCommandCollector, BaseSSHCollector, MOCK_FIXTURES, CollectorError, ParamikoSSHCollector
 from homeinfra.collector_service import CollectorService
 from homeinfra.errors import ApiError
 from homeinfra.monitoring import MonitoringService
@@ -260,7 +261,7 @@ class MonitoringAuthorizationTests(MonitoringContractTestCase):
         self.assertEqual(stored["port"], 2201)
         self.assertEqual(stored["device_type"], "nas")
         self.assertEqual(stored["auth_type"], "password")
-        self.assertNotEqual(stored.get("password"), "AdminSecret123!")
+        self.assertEqual(stored.get("password"), "AdminSecret123!")
 
 
 class MonitoringCrudAndFilteringTests(MonitoringContractTestCase):
@@ -626,7 +627,7 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
         self.assertNotIn("inline_private_key", audit_details)
         self.assertNotIn("encrypted_private_key", audit_details)
 
-    def test_password_auth_is_not_persisted_as_plaintext(self):
+    def test_password_auth_is_persisted_but_hidden_from_api(self):
         device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
         submitted_password = "PlaintextSecret123!"
         created, _request_id = self.request(
@@ -652,7 +653,7 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
 
         snapshot = self.app.store.snapshot()
         stored = next(device for device in snapshot["devices"] if device["id"] == "dev-password-01")
-        self.assertNotEqual(stored.get("password"), submitted_password)
+        self.assertEqual(stored.get("password"), submitted_password)
 
     def test_validation_error_does_not_leak_private_key_path(self):
         app = HomeInfraApp(collector_mode="ssh")
@@ -707,7 +708,7 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
         self.assertNotIn("/tmp/very-secret-key", ctx.exception.message)
         self.assertNotIn("private_key_path", ctx.exception.message)
 
-    def test_legacy_plaintext_password_is_scrubbed_on_load(self):
+    def test_legacy_plaintext_password_is_preserved_on_load(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "legacy.db")
             # Initialize the schema on a real file DB, then close it.
@@ -751,14 +752,184 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
 
             pw = rows["dev-pw"]
             self.assertEqual(pw["auth_type"], "password")
-            self.assertNotEqual(pw["password"], "plaintext-secret")
-            self.assertEqual(pw["password"], EXTERNAL_SECRET_SENTINEL)
+            self.assertEqual(pw["password"], "plaintext-secret")
             self.assertIsNone(pw["encrypted_private_key"])
 
             key = rows["dev-key"]
             self.assertEqual(key["auth_type"], "private_key")
             self.assertIsNone(key["password"])
             self.assertIsNone(key["encrypted_private_key"])
+
+    def test_stored_password_auth_allowed_by_default_for_ssh_collection(self):
+        with patch.dict(os.environ, {}, clear=True):
+            kwargs = ParamikoSSHCollector._build_connect_kwargs(
+                {
+                    "host": "192.0.2.95",
+                    "port": 22,
+                    "username": "root",
+                    "auth_type": "password",
+                    "password": "LanSecret123!",
+                },
+                5,
+            )
+        self.assertEqual(kwargs["password"], "LanSecret123!")
+
+    def test_stored_password_auth_can_be_disabled_with_clear_error(self):
+        with patch.dict(os.environ, {"ALLOW_STORED_PASSWORD_AUTH": "0"}, clear=True):
+            with self.assertRaises(CollectorError) as ctx:
+                ParamikoSSHCollector._build_connect_kwargs(
+                    {
+                        "host": "192.0.2.96",
+                        "port": 22,
+                        "username": "root",
+                        "auth_type": "password",
+                        "password": "LanSecret123!",
+                    },
+                    5,
+                )
+        self.assertEqual(ctx.exception.status, "warning")
+        self.assertEqual(ctx.exception.reason, "password_auth_disabled")
+        self.assertIn("密码认证已被配置禁用", ctx.exception.message)
+        self.assertIn("ALLOW_STORED_PASSWORD_AUTH=1", ctx.exception.message)
+
+    def test_default_homeinfra_app_uses_ssh_when_collector_mode_unspecified(self):
+        with patch.dict(os.environ, {}, clear=True):
+            app = HomeInfraApp(static_dir="static")
+        self.assertEqual(app._collector_mode, "ssh")
+
+    def test_explicit_disabled_collector_mode_still_disables_collection(self):
+        with patch.dict(os.environ, {"COLLECTOR_MODE": "ssh"}, clear=True):
+            app = HomeInfraApp(static_dir="static", collector_mode="disabled")
+        self.assertEqual(app._collector_mode, "disabled")
+
+    def test_public_device_marks_global_disabled_when_runtime_collector_disabled(self):
+        app = HomeInfraApp(static_dir="static", collector_mode="disabled")
+        bootstrap = app.auth.bootstrap_admin({"username": "admin", "password": "ExampleAdminPass123"})
+        created, _request_id = app.handle_api_request(
+            method="POST",
+            path="/api/v1/devices",
+            headers={"authorization": f"Bearer {bootstrap['token']}"},
+            body={
+                "id": "dev-disabled-global",
+                "name": "Disabled Global",
+                "host": "192.0.2.97",
+                "username": "root",
+                "auth_type": "password",
+                "password": "LanSecret123!",
+                "group_id": "grp-ungrouped",
+                "device_type": "other",
+                "tags": [],
+                "enabled": True,
+                "collection_interval": 60,
+            },
+            query={},
+        )
+        detail, _request_id = app.handle_api_request(
+            method="GET",
+            path=f"/api/v1/devices/{created['id']}",
+            headers={"authorization": f"Bearer {bootstrap['token']}"},
+            body={},
+            query={},
+        )
+        self.assertEqual(detail["collection_state"], "global_disabled")
+        self.assertEqual(detail["collection_detail_code"], "global_collector_disabled")
+
+    def test_public_device_marks_missing_credentials(self):
+        detail = self.app.service.monitoring.create_device(
+            {
+                "id": "dev-missing-auth",
+                "name": "Missing Auth",
+                "host": "192.0.2.98",
+                "username": "root",
+                "auth_type": "none",
+                "group_id": "grp-ungrouped",
+                "device_type": "other",
+                "tags": [],
+                "enabled": True,
+                "collection_interval": 60,
+            }
+        )
+        fetched = self.app.service.monitoring.get_device(detail["id"])
+        self.assertEqual(fetched["collection_state"], "credential_missing")
+        self.assertEqual(fetched["collection_detail_code"], "missing_ssh_credential")
+
+    def test_public_device_marks_password_auth_disabled(self):
+        with patch.dict(os.environ, {"ALLOW_STORED_PASSWORD_AUTH": "0"}, clear=True):
+            detail = self.app.service.monitoring.create_device(
+                {
+                    "id": "dev-password-blocked",
+                    "name": "Password Blocked",
+                    "host": "192.0.2.99",
+                    "username": "root",
+                    "auth_type": "password",
+                    "password": "LanSecret123!",
+                    "group_id": "grp-ungrouped",
+                    "device_type": "other",
+                    "tags": [],
+                    "enabled": True,
+                    "collection_interval": 60,
+                }
+            )
+            fetched = self.app.service.monitoring.get_device(detail["id"])
+        self.assertEqual(fetched["collection_state"], "password_auth_blocked")
+        self.assertEqual(fetched["collection_detail_code"], "password_auth_disabled")
+
+    def test_collection_failure_without_history_is_exposed(self):
+        class FailingCollector(BaseSSHCollector):
+            name = "failing"
+
+            def execute_commands(self, device, probes, *, timeout):
+                raise CollectorError(
+                    "SSH 连接或命令执行失败: timed out",
+                    status="critical",
+                    reason="ssh_connection_failed",
+                )
+
+        app = HomeInfraApp(
+            static_dir="static",
+            collector_mode="ssh",
+            collector_service_override=CollectorService(
+                FailingCollector(), sample_interval=0.0, data_source="ssh", is_real_data=True
+            ),
+        )
+        bootstrap = app.auth.bootstrap_admin({"username": "admin", "password": "ExampleAdminPass123"})
+        created, _request_id = app.handle_api_request(
+            method="POST",
+            path="/api/v1/devices",
+            headers={"authorization": f"Bearer {bootstrap['token']}"},
+            body={
+                "id": "dev-failure-state",
+                "name": "Failure State",
+                "host": "192.0.2.100",
+                "username": "root",
+                "auth_type": "password",
+                "password": "LanSecret123!",
+                "group_id": "grp-ungrouped",
+                "device_type": "other",
+                "tags": [],
+                "enabled": True,
+                "collection_interval": 60,
+            },
+            query={},
+        )
+        refreshed, _request_id = app.handle_api_request(
+            method="POST",
+            path=f"/api/v1/devices/{created['id']}/refresh",
+            headers={"authorization": f"Bearer {bootstrap['token']}"},
+            body={"timeout": 5},
+            query={},
+        )
+        self.assertEqual(refreshed["record"]["detail_code"], "ssh_connection_failed")
+        detail, _request_id = app.handle_api_request(
+            method="GET",
+            path=f"/api/v1/devices/{created['id']}",
+            headers={"authorization": f"Bearer {bootstrap['token']}"},
+            body={},
+            query={},
+        )
+        self.assertEqual(detail["collection_state"], "failed")
+        self.assertEqual(detail["collection_detail_code"], "ssh_connection_failed")
+        self.assertEqual(detail["collection_history_state"], "failed_no_history")
 
     def test_collection_history_keeps_refresh_records(self):
         store = SQLiteStore()

@@ -7,21 +7,23 @@ services:
     container_name: homeinfra-control-center
     restart: unless-stopped
     environment:
-      # Container-side listen address. Keep HOST_BIND below at 127.0.0.1 to
-      # avoid publishing the UI beyond the local machine by default.
+      # Container-side listen address. Keep 0.0.0.0 so the app is reachable
+      # from the Docker bridge and, by default, from your LAN via HOST_BIND.
       APP_HOST: "${APP_HOST:-0.0.0.0}"
       APP_PORT: "${APP_PORT:-8000}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       HOMEINFRA_DB_PATH: "${HOMEINFRA_DB_PATH:-/app/data/homeinfra.db}"
-      COLLECTOR_MODE: "${COLLECTOR_MODE:-disabled}"
-      SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-0}"
+      COLLECTOR_MODE: "${COLLECTOR_MODE:-ssh}"
+      ALLOW_STORED_PASSWORD_AUTH: "${ALLOW_STORED_PASSWORD_AUTH:-1}"
+      SSH_AUTO_ACCEPT_HOST_KEY: "${SSH_AUTO_ACCEPT_HOST_KEY:-1}"
       SSH_CONNECT_TIMEOUT: "${SSH_CONNECT_TIMEOUT:-10}"
       SSH_RETRY_MAX: "${SSH_RETRY_MAX:-2}"
       SSH_RETRY_BASE_DELAY: "${SSH_RETRY_BASE_DELAY:-1.0}"
       SSH_KNOWN_HOSTS: "${SSH_KNOWN_HOSTS:-/app/ssh/known_hosts}"
     ports:
-      # Host-side exposure boundary. By default only localhost can reach the UI.
-      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8010}:${APP_PORT:-8000}"
+      # Host-side exposure boundary. Default to LAN-friendly access; do not
+      # publish this service directly to the public Internet.
+      - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8010}:${APP_PORT:-8000}"
     volumes:
       - homeinfra_control_center_data:/app/data
       - homeinfra_control_center_logs:/app/logs

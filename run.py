@@ -39,10 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--collector-mode",
         choices=("ssh", "disabled"),
-        default=(
-            "ssh" if os.getenv("COLLECTOR_MODE") == "ssh"
-            else os.getenv("COLLECTOR_MODE", "disabled")
-        ),
+        default=os.getenv("COLLECTOR_MODE", "ssh"),
         help="Collector mode: ssh (real), disabled (no collection)",
     )
     parser.add_argument(
@@ -53,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ssh-auto-accept-host-key",
         action="store_true",
-        default=env_flag("SSH_AUTO_ACCEPT_HOST_KEY", False),
+        default=env_flag("SSH_AUTO_ACCEPT_HOST_KEY", True),
         help="Auto-accept unknown SSH host keys (use with caution)",
     )
     parser.add_argument(

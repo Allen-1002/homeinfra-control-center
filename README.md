@@ -58,8 +58,8 @@ http://127.0.0.1:8010/
 docker compose up --build
 ```
 
-默认 Compose 配置会使用 `HOST_BIND=127.0.0.1`，也就是只把 Web 入口发布到本机回环地址；如需改成其他监听地址，请显式覆盖 `HOST_BIND`。
-`APP_HOST` 只控制容器内进程监听地址，`HOST_BIND` 才决定宿主机暴露面；默认配置不会把服务直接开放到公网。
+默认 Compose 配置会使用 `HOST_BIND=0.0.0.0`，方便 NAS、N1、飞牛、PVE、树莓派等个人内网设备在部署后直接访问；如果只想本机访问，可以显式改回 `127.0.0.1`。
+`APP_HOST` 只控制容器内进程监听地址，`HOST_BIND` 才决定宿主机暴露面；这个默认值适合家庭内网，不建议直接暴露到公网。
 
 ## 配置说明
 
@@ -69,7 +69,7 @@ docker compose up --build
 - 静态资源目录：`./static`
 - 环境变量示例：[`.env.example`](./.env.example)
 - 容器内监听：`APP_HOST`，默认 `0.0.0.0`
-- 宿主机发布边界：`HOST_BIND`，默认 `127.0.0.1`
+- 宿主机发布边界：`HOST_BIND`，默认 `0.0.0.0`
 
 启动时可以覆盖数据库路径：
 
@@ -78,6 +78,32 @@ python3 run.py --db-path /app/data/homeinfra.db
 ```
 
 首次启动且数据库为空时，系统会要求先创建第一个管理员账号，之后才能正常登录使用。
+
+## 个人内网默认配置说明
+
+为了让个人内网场景首次部署后尽快进入可用状态，当前默认配置调整为：
+
+- 默认启用 SSH 采集：`COLLECTOR_MODE=ssh`
+- 默认监听局域网：`HOST_BIND=0.0.0.0`
+- 默认允许使用页面保存的 SSH 密码：`ALLOW_STORED_PASSWORD_AUTH=1`
+- 默认自动接受 SSH Host Key：`SSH_AUTO_ACCEPT_HOST_KEY=1`
+
+这些默认值适合家庭内网、自托管和实验环境，方便部署到 NAS、N1、飞牛、PVE、树莓派等设备后直接访问和采集。
+
+请注意：这并不适合直接暴露到公网。如果你需要公网访问，请先放在可信的反向代理、VPN 或其他受控网络边界之后。
+
+## 更安全的配置方式
+
+如果你更看重默认收敛暴露面，可以改成：
+
+```sh
+HOST_BIND=127.0.0.1
+COLLECTOR_MODE=disabled
+ALLOW_STORED_PASSWORD_AUTH=0
+SSH_AUTO_ACCEPT_HOST_KEY=0
+```
+
+这会把界面限制为本机访问、默认关闭采集、禁止使用页面保存的 SSH 密码，并恢复严格的 Host Key 确认流程。
 
 ## 采集模式
 
@@ -88,15 +114,19 @@ python3 run.py --db-path /app/data/homeinfra.db
 | Disabled | `disabled` | 仅保存设备配置，不执行采集 |
 | SSH | `ssh` | 通过 SSH 连接目标设备，执行应用内置只读 probe（经危险 token denylist 校验，非用户可配置 allowlist） |
 
-出于公开项目的默认安全考虑，`.env.example` 中的 `SSH_AUTO_ACCEPT_HOST_KEY` 默认值为 `0`，即默认不自动接受 SSH 主机指纹。
-
-如果是在受信任的家庭内网环境中进行首次接入测试，可以临时设置为：
+默认配置会在个人内网环境中启用以下行为：
 
 ```sh
 SSH_AUTO_ACCEPT_HOST_KEY=1
 ```
 
-完成首次确认后，建议改回 `0`，并配合 `SSH_KNOWN_HOSTS` 使用。
+如果你希望恢复更严格的校验方式，可以改回：
+
+```sh
+SSH_AUTO_ACCEPT_HOST_KEY=0
+```
+
+并配合 `SSH_KNOWN_HOSTS` 使用。
 
 本地运行示例：
 
@@ -116,14 +146,9 @@ ssh-copy-id -i ./ssh-keys/id_ed25519.pub monitor@example-host
 推荐凭据策略：
 
 - 优先使用只读、低权限的外部私钥文件路径，例如 `private_key_path=/app/ssh-keys/id_ed25519`
-- 不要把明文 SSH 密码写入仓库或长期保存在应用数据文件中
-- 当前实现不接受内联私钥内容；如果使用密码认证，应通过外部凭据源在运行时注入
-- 在真实 SSH 采集模式（`COLLECTOR_MODE=ssh`）下，password 认证设备不会使用落库明文密码采集；如果没有外部凭据源注入，这类设备的采集会失败。推荐改用只读低权限 `key_path` / `private_key_path`
-
-升级提示：
-
-- 本版本起，旧 `devices.password` 中的明文 SSH 密码会在加载时被非破坏性清理（password 认证设备改写为外部凭据占位符，其他认证类型置空），`encrypted_private_key` 内联密钥也会被清空
-- 升级后，原明文 SSH 密码应视为已暴露，请立即轮换；password 认证设备需要重新配置外部凭据源或改用 `key_path`
+- 如果你在个人内网环境里直接使用页面保存的 SSH 密码，默认会允许真实采集使用它；对应开关是 `ALLOW_STORED_PASSWORD_AUTH=1`
+- 如果你不希望应用使用页面保存的 SSH 密码，可以显式设置 `ALLOW_STORED_PASSWORD_AUTH=0`
+- 当前实现不接受内联私钥内容
 
 容器内路径示例：
 

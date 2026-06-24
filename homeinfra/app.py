@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import posixpath
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,13 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .auth import AuthService, require_permission, require_role
 from .collector_service import CollectorService
-from .collectors import DisabledCollector, ParamikoSSHCollector, RetryStrategy, CollectorError
+from .collectors import (
+    CollectorError,
+    DisabledCollector,
+    ParamikoSSHCollector,
+    RetryStrategy,
+    allow_stored_password_auth,
+)
 from .errors import (
     ApiError,
     ConfirmationRequiredError,
@@ -74,6 +81,17 @@ def sanitize_ssh_validation_message(message: str) -> str:
     return message
 
 
+def resolve_collector_mode(collector_mode: str | None) -> str:
+    if collector_mode not in {None, ""}:
+        normalized = str(collector_mode).strip().lower()
+    else:
+        env_mode = os.getenv("COLLECTOR_MODE")
+        normalized = env_mode.strip().lower() if env_mode is not None and env_mode.strip() else "ssh"
+    if normalized not in {"ssh", "disabled"}:
+        raise ValueError(f"unsupported collector_mode: {normalized}")
+    return normalized
+
+
 def parse_json_object_body(raw: bytes, *, content_length: int) -> dict[str, Any]:
     if content_length < 0:
         raise ValidationError("Content-Length 非法", {"header": str(content_length)})
@@ -104,7 +122,7 @@ class HomeInfraApp:
         static_dir: str | None = None,
         store_mode: str = "sqlite",
         db_path: str | None = None,
-        collector_mode: str = "disabled",
+        collector_mode: str | None = None,
         ssh_known_hosts: str | None = None,
         ssh_auto_accept_host_key: bool = False,
         ssh_retry_max: int = 3,
@@ -118,14 +136,11 @@ class HomeInfraApp:
         else:
             raise ValueError(f"unsupported store_mode: {store_mode}")
 
-        if collector_mode not in {"ssh", "disabled"}:
-            raise ValueError(f"unsupported collector_mode: {collector_mode}")
-
-        self._collector_mode = collector_mode
+        self._collector_mode = resolve_collector_mode(collector_mode)
 
         if collector_service_override is not None:
             self._collector_service = collector_service_override
-        elif collector_mode == "ssh":
+        elif self._collector_mode == "ssh":
             retry = RetryStrategy(
                 max_retries=ssh_retry_max,
                 base_delay_seconds=ssh_retry_base_delay,
@@ -400,7 +415,10 @@ class HomeInfraApp:
             return service.get_retention_settings()
         if method == "GET" and path == "/api/v1/settings/collection":
             require_permission(principal, "settings", "read")
-            return service.get_collection_settings()
+            result = dict(service.get_collection_settings())
+            result["collector_mode"] = self._collector_mode
+            result["allow_stored_password_auth"] = allow_stored_password_auth()
+            return result
         if method == "PATCH" and path == "/api/v1/settings/collection":
             require_permission(principal, "settings", "write")
             result = service.update_collection_settings(body)
@@ -705,7 +723,7 @@ def create_server(
     static_dir: str | None = None,
     store_mode: str = "sqlite",
     db_path: str | None = None,
-    collector_mode: str = "disabled",
+    collector_mode: str | None = None,
     ssh_known_hosts: str | None = None,
     ssh_auto_accept_host_key: bool = False,
     ssh_retry_max: int = 3,

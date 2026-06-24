@@ -86,10 +86,24 @@ class FrontendSmokeTests(unittest.TestCase):
         script = self.read_static("app.js")
 
         self.assertIn("真实 SSH 数据", script)
-        self.assertIn("采集已禁用 / 无可用数据", script)
+        self.assertIn("采集未开启：当前 COLLECTOR_MODE=disabled", script)
+        self.assertIn("设备已禁用：请先启用该设备", script)
+        self.assertIn("缺少 SSH 凭据：请配置 SSH 密钥或密码", script)
+        self.assertIn("密码认证未启用：请在 .env 中设置 ALLOW_STORED_PASSWORD_AUTH=1", script)
+        self.assertIn("SSH 连接失败：请检查主机地址、端口、用户名和凭据", script)
+        self.assertIn("采集成功但数据为空：请检查目标主机返回内容", script)
         self.assertIn("未验证", script)
         self.assertIn("采集错误", script)
         self.assertIn("指标不可用", script)
+
+    def test_app_js_collection_state_helpers_exist(self):
+        script = self.read_static("app.js")
+
+        self.assertIn("getCollectionState", script)
+        self.assertIn("renderCollectionStateCard", script)
+        self.assertIn("collectionPayloadHasData", script)
+        self.assertIn("currentCollectionHasData", script)
+        self.assertIn("hasCollectionHistory", script)
 
     def test_app_js_references_health_and_bucket_fields(self):
         """New backend compatibility fields must be consumed by the UI."""
