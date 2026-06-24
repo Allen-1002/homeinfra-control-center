@@ -56,6 +56,7 @@ SENSITIVE_AUDIT_KEYS = {
     "password_salt",
     "private_key_path",
     "token",
+    "token_hash",
 }
 
 

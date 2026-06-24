@@ -292,6 +292,49 @@ class ResponseSecurityHeaderTests(unittest.TestCase):
         after = self.app.store.read("metrics")["requests_total"]
         self.assertEqual(after - before, 1)
 
+    def test_audit_payload_strips_all_sensitive_keys_including_token_hash(self):
+        payload = {
+            "username": "admin",
+            "password": "ssh-secret",
+            "new_password": "rotated-secret",
+            "password_hash": "deadbeef",
+            "password_salt": "salty",
+            "authorization": "Bearer abc",
+            "token": "raw-token",
+            "token_hash": "tokhash-123",
+            "private_key_path": "/keys/id",
+            "key_path": "/keys/id",
+            "inline_private_key": "INLINE",
+            "encrypted_private_key": "LEGACY",
+            "device": {
+                "id": "dev-1",
+                "token_hash": "nested-tokhash",
+                "password": "nested-secret",
+            },
+            "tags": ["keep", "this"],
+        }
+        sanitized = self.app.safe_audit_payload(payload)
+        for key in (
+            "password",
+            "new_password",
+            "password_hash",
+            "password_salt",
+            "authorization",
+            "token",
+            "token_hash",
+            "private_key_path",
+            "key_path",
+            "inline_private_key",
+            "encrypted_private_key",
+        ):
+            self.assertNotIn(key, sanitized, f"leaked top-level key: {key}")
+        self.assertEqual(sanitized["username"], "admin")
+        self.assertEqual(sanitized["tags"], ["keep", "this"])
+        nested = sanitized["device"]
+        self.assertEqual(nested["id"], "dev-1")
+        self.assertNotIn("token_hash", nested)
+        self.assertNotIn("password", nested)
+
 
 class RealHttpSecurityHeaderTests(unittest.TestCase):
     """Verify security headers are emitted on real HTTP responses, not just by

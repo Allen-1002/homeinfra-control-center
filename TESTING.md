@@ -36,7 +36,7 @@ PYTHONPYCACHEPREFIX=/private/tmp/homeinfra-pyc python3 -m compileall homeinfra r
 - 用户管理权限
 - 设备 / 分组 CRUD
 - 删除分组后设备回到未分组
-- SSH 白名单
+- SSH 命令安全校验（内置只读 probe + 危险 token denylist）
 - 内存采集桩与异常场景
 - 历史记录筛选
 - 告警筛选

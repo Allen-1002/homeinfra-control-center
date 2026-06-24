@@ -127,7 +127,8 @@ flowchart LR
 ### ParamikoSSHCollector
 
 - 仅在 `COLLECTOR_MODE=ssh` 或 `--collector-mode=ssh` 时启用
-- 只执行白名单只读命令
+- 只执行应用内置只读 probe 命令（按设备类型固定），不提供用户可配置命令 allowlist
+- 每条命令执行前经命令安全校验（字符白名单 + 危险 token denylist）
 - 强制 timeout
 - 默认拒绝未知 host key
 - 优先使用外部只读私钥路径，不接受内联私钥内容
@@ -135,7 +136,7 @@ flowchart LR
 ## 安全边界
 
 - 没有任意命令执行入口
-- SSH 采集仅允许白名单只读命令
+- SSH 采集仅执行内置只读 probe，并经危险 token denylist 校验
 - 不包含系统级写入或危险运维动作
 
 ## 前端策略

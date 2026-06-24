@@ -27,7 +27,8 @@
 - 当前是 Bearer Token，不是 cookie session
 - 当前没有 CSRF 机制，因为不是 cookie 模式
 - 当前不适合直接暴露到公网
-- 当前内置限速默认使用直连 socket IP，不信任客户端自行提交的代理头
+- 登录限流是轻量级进程内状态：5 分钟内失败 5 次后进入 5 分钟冷却；进程重启会清零，多实例之间不共享。如果未来暴露到共享环境，应迁移到 SQLite/Redis 持久化限流，或交给反向代理/WAF 统一做限流
+- 当前 `extract_client_ip` 不信任客户端提交的 `X-Forwarded-For` 等代理头，默认使用直连 socket 来源 IP，避免 header 伪造。代价是：部署在反向代理后面时，多个用户可能被视为同一个代理 IP，导致限流粒度变粗。未来可增加 `TRUSTED_PROXY_CIDRS` 配置，或由反代/WAF 负责真实 IP 透传与限流
 
 ## 权限
 
@@ -44,12 +45,15 @@
 安全要求：
 
 - 强制 timeout
-- 只允许白名单只读命令
+- 采集只执行应用内置的只读 probe 命令（按设备类型固定，不可由用户配置）
+- 每条命令在执行前经过命令安全校验：字符白名单 + 危险 token denylist
 - 默认拒绝未知 host key
 - 不允许任意命令执行
 - 不在审计日志、错误响应或普通设备 API 中返回密码、私钥路径、token 或授权头
 
-禁止命令包括但不限于：
+当前并未实现用户可配置的命令 allowlist；命令集合由应用内置 probe 决定。Phase-2 可考虑改为 probe-id allowlist，由管理员显式启用/禁用某些 probe。
+
+危险 token denylist 包括但不限于：
 
 - `rm`
 - `dd`
@@ -123,6 +127,7 @@ Compose 默认：
 - 浏览器端静态资源默认全部从本地 `static/` 提供
 - `Chart.js` 已固定版本并 vendor 到 `static/vendor/`
 - 默认策略不依赖外部 CDN
+- `Content-Security-Policy` 当前仍保留 `script-src 'unsafe-inline'` 与 `style-src 'unsafe-inline'`：`index.html` 本身没有内联 `<script>` 块，但 `app.js` 动态生成的 HTML 大量使用内联事件处理器（`onclick`/`onsubmit`/`onchange` 等）和内联 `style` 属性，移除 `unsafe-inline` 会导致 UI 失效。Phase-2 计划将内联事件处理器重构为 `addEventListener` + `data-*` 属性、内联样式抽取到外部样式表，再逐步收紧 CSP
 
 ## 人工检查建议
 

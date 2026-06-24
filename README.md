@@ -86,7 +86,7 @@ python3 run.py --db-path /app/data/homeinfra.db
 | 模式 | 值 | 说明 |
 | --- | --- | --- |
 | Disabled | `disabled` | 仅保存设备配置，不执行采集 |
-| SSH | `ssh` | 通过 SSH 连接目标设备，并执行受白名单限制的只读命令 |
+| SSH | `ssh` | 通过 SSH 连接目标设备，执行应用内置只读 probe（经危险 token denylist 校验，非用户可配置 allowlist） |
 
 出于公开项目的默认安全考虑，`.env.example` 中的 `SSH_AUTO_ACCEPT_HOST_KEY` 默认值为 `0`，即默认不自动接受 SSH 主机指纹。
 
@@ -163,7 +163,7 @@ chmod +x smoke_test.sh
 
 - 这是一个本地优先项目，建议始终放在可信网络边界之后使用。
 - 默认静态资源全部从本地 `static/` 提供；`Chart.js` 已 vendor 到 `static/vendor/`，不依赖外部 CDN。
-- SSH 采集器只用于只读监控，并且受命令白名单限制。
+- SSH 采集器只用于只读监控，执行应用内置 probe 命令并经危险 token denylist 校验；当前不提供用户可配置命令 allowlist（Phase-2 可考虑 probe-id allowlist）。
 - 这个项目目前还比较初级，后续我会继续迭代和完善。使用过程中如果遇到问题，欢迎直接提出，我会尽快排查和修复；如果有新的建议或你希望支持的功能，也欢迎继续反馈。
 - 更多接口与实现说明可参考 [`API.md`](./API.md)、[`ARCHITECTURE.md`](./ARCHITECTURE.md) 和 [`前端API调用规则.md`](./前端API调用规则.md)。
 
