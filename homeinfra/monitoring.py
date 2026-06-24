@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .collector_service import CollectorService
-from .collectors import CollectorError, DisabledCollector, MockCommandCollector
+from .collectors import CollectorError, DisabledCollector, MockCommandCollector, EXTERNAL_SECRET_SENTINEL
 from .errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from .mock_data import isoformat, utc_now
 
@@ -19,13 +19,22 @@ VALID_AUTH_TYPES = {"password", "private_key", "none"}
 VALID_DEVICE_TYPES = {"linux_server", "nas", "openwrt", "docker_host", "proxmox_host", "router", "mini_pc", "other"}
 OPERATOR_EDITABLE_DEVICE_FIELDS = {
     "name",
-    "host",
-    "port",
-    "device_type",
     "group_id",
     "tags",
     "enabled",
     "collection_interval",
+}
+OPERATOR_PROTECTED_DEVICE_FIELDS = {
+    "host",
+    "port",
+    "device_type",
+    "username",
+    "auth_type",
+    "password",
+    "inline_private_key",
+    "private_key_path",
+    "key_path",
+    "encrypted_private_key",
 }
 CONNECTION_RELATED_FIELDS = {
     "host",
@@ -33,6 +42,7 @@ CONNECTION_RELATED_FIELDS = {
     "username",
     "auth_type",
     "password",
+    "inline_private_key",
     "private_key_path",
     "key_path",
     "encrypted_private_key",
@@ -321,8 +331,8 @@ def save_device(path: str, device: dict[str, Any]) -> dict[str, Any]:
             "host": device["host"],
             "port": device.get("port", 22),
             "username": device.get("username", "monitor"),
-            "auth_type": device.get("auth_type", "private_key"),
-            "private_key_path": device.get("private_key_path", "/tmp/mock-key"),
+            "auth_type": device.get("auth_type", "none"),
+            "private_key_path": device.get("private_key_path"),
             "device_type": device.get("device_type", "other"),
             "group_id": device.get("group_id", UNGROUPED_GROUP_ID),
             "tags": device.get("tags", []),
@@ -531,34 +541,35 @@ class MonitoringService:
 
     def create_device(self, payload: dict[str, Any]) -> dict[str, Any]:
         validated = self._validate_device_payload(payload, partial=False)
+        stored = deepcopy(validated)
+        self._normalize_stored_credentials(stored)
         # Inherit the global default_collection_interval when not explicitly set.
         if "collection_interval" not in payload and "poll_interval" not in payload:
-            validated["collection_interval"] = self._default_collection_interval()
+            stored["collection_interval"] = self._default_collection_interval()
 
         def mutate(state):
-            self._ensure_group_exists(state, validated["group_id"])
-            device_id = validated.get("id") or f"dev-{_slugify(validated['name'])}"
+            self._ensure_group_exists(state, stored["group_id"])
+            device_id = stored.get("id") or f"dev-{_slugify(stored['name'])}"
             if any(device["id"] == device_id for device in state["devices"]):
                 raise ConflictError("设备 ID 已存在", {"device_id": device_id})
             now = isoformat(utc_now())
             device = {
                 "id": device_id,
-                "name": validated["name"],
-                "host": validated["host"],
-                "port": validated["port"],
-                "username": validated["username"],
-                "auth_type": validated["auth_type"],
-                "password": validated.get("password"),
-                "private_key_path": validated.get("private_key_path"),
-                "encrypted_private_key": validated.get("encrypted_private_key"),
-                "device_type": validated["device_type"],
-                "group_id": validated["group_id"],
-                "tags": validated["tags"],
-                "enabled": validated["enabled"],
-                "collection_interval": validated["collection_interval"],
-                "last_seen": validated.get("last_seen"),
-                "status": validated.get("status", "unknown"),
-                "verified": bool(validated.get("verified", False)),
+                "name": stored["name"],
+                "host": stored["host"],
+                "port": stored["port"],
+                "username": stored["username"],
+                "auth_type": stored["auth_type"],
+                "password": stored.get("password"),
+                "private_key_path": stored.get("private_key_path"),
+                "device_type": stored["device_type"],
+                "group_id": stored["group_id"],
+                "tags": stored["tags"],
+                "enabled": stored["enabled"],
+                "collection_interval": stored["collection_interval"],
+                "last_seen": stored.get("last_seen"),
+                "status": stored.get("status", "unknown"),
+                "verified": bool(stored.get("verified", False)),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -585,6 +596,8 @@ class MonitoringService:
         *,
         allow_sensitive_fields: bool = True,
     ) -> dict[str, Any]:
+        if not allow_sensitive_fields and OPERATOR_PROTECTED_DEVICE_FIELDS.intersection(payload):
+            raise ForbiddenError("operator 不能修改 SSH 凭据或受保护字段")
         validated = self._validate_device_payload(payload, partial=True)
         if not allow_sensitive_fields:
             disallowed_fields = sorted(set(validated) - OPERATOR_EDITABLE_DEVICE_FIELDS)
@@ -605,6 +618,7 @@ class MonitoringService:
                     merged["status"] = "unknown"
                 merged["last_seen"] = None
             self._enforce_auth_shape(merged)
+            self._normalize_stored_credentials(merged)
             device.update(merged)
             device["updated_at"] = isoformat(utc_now())
             state["metrics"]["device_writes_total"] += 1
@@ -976,11 +990,10 @@ class MonitoringService:
     def _public_device(self, device: dict[str, Any], snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = deepcopy(device)
         payload.pop("password", None)
-        if payload.get("encrypted_private_key"):
-            payload["encrypted_private_key"] = "***configured***"
-        if payload.get("private_key_path"):
-            payload["private_key_path"] = "***configured***"
-        payload["key_path"] = payload.get("private_key_path")
+        payload.pop("inline_private_key", None)
+        payload.pop("private_key_path", None)
+        payload.pop("key_path", None)
+        payload.pop("encrypted_private_key", None)
         payload["collection_interval"] = payload.get("collection_interval", payload.get("poll_interval", 60))
         payload["verified"] = bool(payload.get("verified", False))
         if snapshot is not None:
@@ -1181,7 +1194,11 @@ class MonitoringService:
             payload = dict(payload)
             payload["private_key_path"] = payload.get("key_path")
 
-        for optional_field in ("id", "password", "private_key_path", "encrypted_private_key", "last_seen", "status", "verified"):
+        if "encrypted_private_key" in payload and "inline_private_key" not in payload:
+            payload = dict(payload)
+            payload["inline_private_key"] = payload.get("encrypted_private_key")
+
+        for optional_field in ("id", "password", "private_key_path", "inline_private_key", "last_seen", "status", "verified"):
             if optional_field not in payload:
                 continue
             value = payload.get(optional_field)
@@ -1191,16 +1208,16 @@ class MonitoringService:
                 validated["id"] = value.strip()
             elif optional_field == "password":
                 if value is not None and (not isinstance(value, str) or not value.strip()):
-                    raise ValidationError("password 必须是字符串或 null")
+                    raise ValidationError("SSH 密码必须是字符串或 null")
                 validated["password"] = value.strip() if isinstance(value, str) else None
             elif optional_field == "private_key_path":
                 if value is not None and (not isinstance(value, str) or not value.strip()):
-                    raise ValidationError("private_key_path 必须是字符串或 null")
+                    raise ValidationError("SSH 私钥路径必须是字符串或 null")
                 validated["private_key_path"] = value.strip() if isinstance(value, str) else None
-            elif optional_field == "encrypted_private_key":
-                if value is not None and (not isinstance(value, str) or not value.strip()):
-                    raise ValidationError("encrypted_private_key 必须是字符串或 null")
-                validated["encrypted_private_key"] = value.strip() if isinstance(value, str) else None
+            elif optional_field == "inline_private_key":
+                if value not in {None, ""}:
+                    raise ValidationError("系统不接受内联 SSH 私钥，请改用外部私钥文件路径")
+                validated["inline_private_key"] = None
             elif optional_field == "last_seen":
                 if value is not None and (not isinstance(value, str) or not value.strip()):
                     raise ValidationError("last_seen 必须是 ISO 时间字符串或 null")
@@ -1223,12 +1240,36 @@ class MonitoringService:
         auth_type = payload.get("auth_type")
         if partial and auth_type is None:
             return
-        if auth_type == "password" and not payload.get("password"):
-            raise ValidationError("auth_type=password 时必须提供 password")
+        if auth_type == "password":
+            if not payload.get("password"):
+                raise ValidationError("使用密码认证时必须提供 SSH 凭据")
+            payload["private_key_path"] = None
+            payload["inline_private_key"] = None
         if auth_type == "private_key":
-            if not payload.get("private_key_path") and not payload.get("encrypted_private_key"):
-                raise ValidationError("auth_type=private_key 时必须提供 private_key_path 或 encrypted_private_key")
+            if payload.get("inline_private_key"):
+                raise ValidationError("系统不接受内联 SSH 私钥，请改用外部私钥文件路径")
+            if not payload.get("private_key_path"):
+                raise ValidationError("使用私钥认证时必须提供 SSH 私钥路径")
+            payload["password"] = None
+            payload["inline_private_key"] = None
         if auth_type == "none":
             payload["password"] = None
             payload["private_key_path"] = None
+            payload["inline_private_key"] = None
+
+    def _normalize_stored_credentials(self, payload: dict[str, Any]) -> None:
+        auth_type = payload.get("auth_type")
+        if auth_type == "password":
+            payload["password"] = EXTERNAL_SECRET_SENTINEL if payload.get("password") else None
+            payload["private_key_path"] = None
+            payload["inline_private_key"] = None
+            payload["encrypted_private_key"] = None
+        elif auth_type == "private_key":
+            payload["password"] = None
+            payload["inline_private_key"] = None
+            payload["encrypted_private_key"] = None
+        else:
+            payload["password"] = None
+            payload["private_key_path"] = None
+            payload["inline_private_key"] = None
             payload["encrypted_private_key"] = None

@@ -24,4 +24,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["python", "/app/run.py", "--host", "0.0.0.0", "--port", "8000", "--static-dir", "/app/static"]
+CMD ["python", "/app/run.py", "--static-dir", "/app/static"]

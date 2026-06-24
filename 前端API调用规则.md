@@ -308,8 +308,6 @@ GET /api/v1/devices?group_id=grp-nas&enabled=true
       "port": 22,
       "username": "monitor",
       "auth_type": "private_key",
-      "private_key_path": "***configured***",
-      "encrypted_private_key": null,
       "device_type": "nas",
       "group_id": "grp-nas",
       "group": {
@@ -388,12 +386,17 @@ DELETE /api/v1/devices/{id}
 
 前端规则：
 - `admin` 可编辑所有字段
-- `operator` 只能编辑普通字段，不能改：
+- `operator` 只能编辑普通字段（名称 / 分组 / 标签 / 启用状态 / 采集周期），不能改：
+  - `host`
+  - `port`
+  - `device_type`
   - `username`
+  - `auth_type`
   - `password`
   - `private_key_path`
+  - `key_path`
+  - `inline_private_key`
   - `encrypted_private_key`
-  - `auth_type`
 - 保存成功后建议立刻调用一次：
 
 ```http

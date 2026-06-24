@@ -30,6 +30,48 @@ from .persistence import SQLiteStore
 
 REQUEST_COUNTER = count(1)
 MAX_JSON_BODY_BYTES = 1_048_576
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store, max-age=0",
+}
+SENSITIVE_AUDIT_KEYS = {
+    "authorization",
+    "encrypted_private_key",
+    "inline_private_key",
+    "key_path",
+    "new_password",
+    "password",
+    "password_hash",
+    "password_salt",
+    "private_key_path",
+    "token",
+    "token_hash",
+}
+
+
+def build_security_headers(*, retry_after: int | None = None) -> dict[str, str]:
+    headers = dict(SECURITY_HEADERS)
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return headers
+
+
+def sanitize_ssh_validation_message(message: str) -> str:
+    lowered = (message or "").lower()
+    if "private_key_path" in lowered or "私钥文件不存在" in message:
+        return "SSH 私钥文件不存在或不可访问"
+    return message
 
 
 def parse_json_object_body(raw: bytes, *, content_length: int) -> dict[str, Any]:
@@ -162,8 +204,9 @@ class HomeInfraApp:
         body: dict[str, Any] | None = None,
         query: dict[str, list[str]] | None = None,
         client_ip: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[dict[str, Any], str]:
-        request_id = self.mark_request()
+        request_id = request_id or self.mark_request()
         lowered_headers = {key.lower(): value for key, value in headers.items()}
         normalized_client_ip = self.extract_client_ip(lowered_headers, fallback=client_ip)
         principal = None
@@ -572,22 +615,14 @@ class HomeInfraApp:
             raise ConfirmationRequiredError(action)
 
     def safe_audit_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        sensitive_keys = {
-            "encrypted_private_key",
-            "password",
-            "key_path",
-            "private_key_path",
-            "password_hash",
-            "password_salt",
-            "new_password",
-        }
-
         def sanitize(value: Any):
             if isinstance(value, dict):
-                return {
-                    key: ("***configured***" if key in sensitive_keys and item else sanitize(item))
-                    for key, item in value.items()
-                }
+                sanitized: dict[str, Any] = {}
+                for key, item in value.items():
+                    if key.lower() in SENSITIVE_AUDIT_KEYS:
+                        continue
+                    sanitized[key] = sanitize(item)
+                return sanitized
             if isinstance(value, list):
                 return [sanitize(item) for item in value]
             return value
@@ -620,7 +655,8 @@ class HomeInfraApp:
             if not hostname and not uname:
                 raise ValidationError("SSH 验证失败：无法获取 hostname 或 uname")
         except CollectorError as exc:
-            raise ValidationError(f"SSH 验证失败：{exc.message}") from exc
+            safe_message = sanitize_ssh_validation_message(exc.message)
+            raise ValidationError(f"SSH 验证失败：{safe_message}") from exc
         return {
             "verified": True,
             "status": "online",
@@ -730,6 +766,7 @@ def create_server(
                         body=body,
                         query=query,
                         client_ip=client_ip,
+                        request_id=request_id,
                     )
                     self._write_json(HTTPStatus.OK, json_envelope(data=data, meta={"request_id": request_id}))
                     return
@@ -748,6 +785,11 @@ def create_server(
                 self._write_json(
                     exc.status,
                     json_envelope(error=exc.to_payload(), meta={"request_id": request_id}),
+                    retry_after=(
+                        int(exc.details.get("retry_after_seconds", 0))
+                        if exc.status == HTTPStatus.TOO_MANY_REQUESTS and exc.details.get("retry_after_seconds")
+                        else None
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - defensive fallback
                 self.app.mark_error()
@@ -798,14 +840,26 @@ def create_server(
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", mime_type or "application/octet-stream")
             self.send_header("Content-Length", str(len(content)))
+            self._write_security_headers()
             self.end_headers()
             self.wfile.write(content)
 
-        def _write_json(self, status: int, payload: dict[str, Any]) -> None:
+        def _write_security_headers(self, *, retry_after: int | None = None) -> None:
+            for header, value in build_security_headers(retry_after=retry_after).items():
+                self.send_header(header, value)
+
+        def _write_json(
+            self,
+            status: int,
+            payload: dict[str, Any],
+            *,
+            retry_after: int | None = None,
+        ) -> None:
             content = json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            self._write_security_headers(retry_after=retry_after)
             self.end_headers()
             self.wfile.write(content)
 
