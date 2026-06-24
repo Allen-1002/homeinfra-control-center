@@ -42,8 +42,15 @@ PYTHONPYCACHEPREFIX=/private/tmp/homeinfra-pyc python3 -m compileall homeinfra r
 - 告警筛选
 - retention cleanup
 - 敏感字段脱敏
+- 设备 API / 审计日志不返回敏感凭据
+- collector / validation 错误不泄露私钥路径
 - JSON 请求体 413 限制
+- 429 响应包含 `Retry-After`
+- JSON / 静态响应安全头
 - Docker Compose 绑定格式
+- `APP_HOST` / `HOST_BIND` 语义契约
+- Chart.js 本地 vendor，不依赖 CDN
+- operator 不能修改 host / port / device_type / SSH 凭据
 - GitHub Actions CI 文件存在性
 - 非法参数不返回 500
 - 前端静态资源 smoke

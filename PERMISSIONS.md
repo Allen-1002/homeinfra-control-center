@@ -5,7 +5,7 @@
 | 角色 | 说明 |
 | --- | --- |
 | `viewer` | 只能查看仪表盘、设备、分组、告警、历史记录 |
-| `operator` | 可刷新设备、测试连接、处理告警、查看审计、编辑普通设备字段 |
+| `operator` | 可刷新设备、测试连接、处理告警、查看审计、编辑非连接类普通设备字段 |
 | `admin` | 可管理用户、设备、分组、SSH 凭据和保留策略 |
 
 ## 矩阵
@@ -16,7 +16,8 @@
 | 查看设备 / 分组 / 告警 / 历史 | 允许 | 允许 | 允许 |
 | 查看审计 | 拒绝 | 允许 | 允许 |
 | 创建设备 | 拒绝 | 拒绝 | 允许 |
-| 编辑普通设备字段 | 拒绝 | 允许 | 允许 |
+| 编辑名称 / 分组 / 标签 / 启用状态 / 采集周期 | 拒绝 | 允许 | 允许 |
+| 编辑 host / port / device_type | 拒绝 | 拒绝 | 允许 |
 | 编辑 SSH 凭据 | 拒绝 | 拒绝 | 允许 |
 | 删除设备 | 拒绝 | 拒绝 | 允许 |
 | 创建设备分组 | 拒绝 | 拒绝 | 允许 |
@@ -31,7 +32,7 @@
 
 ## 特别规则
 
-- `operator` 修改设备时，后端会拒绝 `username/password/private_key_path/encrypted_private_key/auth_type`
+- `operator` 修改设备时，后端会拒绝 `host/port/device_type/username/auth_type/password/private_key_path/key_path/inline_private_key/encrypted_private_key`
 - 删除分组不会删除设备，只会把设备移动到“未分组”
 - cleanup 不会删除活跃告警
 - 所有关键写操作都进入审计日志

@@ -59,6 +59,7 @@ docker compose up --build
 ```
 
 默认 Compose 配置会使用 `HOST_BIND=127.0.0.1`，也就是只把 Web 入口发布到本机回环地址；如需改成其他监听地址，请显式覆盖 `HOST_BIND`。
+`APP_HOST` 只控制容器内进程监听地址，`HOST_BIND` 才决定宿主机暴露面；默认配置不会把服务直接开放到公网。
 
 ## 配置说明
 
@@ -67,6 +68,8 @@ docker compose up --build
 - 数据库路径：`./data/homeinfra.db`
 - 静态资源目录：`./static`
 - 环境变量示例：[`.env.example`](./.env.example)
+- 容器内监听：`APP_HOST`，默认 `0.0.0.0`
+- 宿主机发布边界：`HOST_BIND`，默认 `127.0.0.1`
 
 启动时可以覆盖数据库路径：
 
@@ -110,6 +113,18 @@ ssh-keygen -t ed25519 -C "homeinfra-monitor" -f ./ssh-keys/id_ed25519
 ssh-copy-id -i ./ssh-keys/id_ed25519.pub monitor@example-host
 ```
 
+推荐凭据策略：
+
+- 优先使用只读、低权限的外部私钥文件路径，例如 `private_key_path=/app/ssh-keys/id_ed25519`
+- 不要把明文 SSH 密码写入仓库或长期保存在应用数据文件中
+- 当前实现不接受内联私钥内容；如果使用密码认证，应通过外部凭据源在运行时注入
+- 在真实 SSH 采集模式（`COLLECTOR_MODE=ssh`）下，password 认证设备不会使用落库明文密码采集；如果没有外部凭据源注入，这类设备的采集会失败。推荐改用只读低权限 `key_path` / `private_key_path`
+
+升级提示：
+
+- 本版本起，旧 `devices.password` 中的明文 SSH 密码会在加载时被非破坏性清理（password 认证设备改写为外部凭据占位符，其他认证类型置空），`encrypted_private_key` 内联密钥也会被清空
+- 升级后，原明文 SSH 密码应视为已暴露，请立即轮换；password 认证设备需要重新配置外部凭据源或改用 `key_path`
+
 容器内路径示例：
 
 ```json
@@ -147,6 +162,7 @@ chmod +x smoke_test.sh
 ## 说明
 
 - 这是一个本地优先项目，建议始终放在可信网络边界之后使用。
+- 默认静态资源全部从本地 `static/` 提供；`Chart.js` 已 vendor 到 `static/vendor/`，不依赖外部 CDN。
 - SSH 采集器只用于只读监控，并且受命令白名单限制。
 - 这个项目目前还比较初级，后续我会继续迭代和完善。使用过程中如果遇到问题，欢迎直接提出，我会尽快排查和修复；如果有新的建议或你希望支持的功能，也欢迎继续反馈。
 - 更多接口与实现说明可参考 [`API.md`](./API.md)、[`ARCHITECTURE.md`](./ARCHITECTURE.md) 和 [`前端API调用规则.md`](./前端API调用规则.md)。

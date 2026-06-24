@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("homeinfra.collectors")
+EXTERNAL_SECRET_SENTINEL = "__external_secret__"
 
 
 # ── Command whitelist (read-only, expanded per device type) ──────
@@ -461,20 +462,25 @@ class ParamikoSSHCollector(BaseSSHCollector):
             private_key_path = device.get("private_key_path")
             if not private_key_path:
                 raise CollectorError(
-                    "private_key_path is required for auth_type=private_key",
+                    "使用私钥认证时必须提供 SSH 私钥路径",
                     status="warning",
                 )
             expanded = os.path.expanduser(private_key_path)
             if not os.path.exists(expanded):
                 raise CollectorError(
-                    f"私钥文件不存在: {private_key_path}", status="warning"
+                    "SSH 私钥文件不存在或不可访问", status="warning"
                 )
             connect_kwargs["key_filename"] = expanded
         else:
             password = device.get("password")
+            if password == EXTERNAL_SECRET_SENTINEL:
+                raise CollectorError(
+                    "密码认证需要通过外部凭据源提供 SSH 凭据",
+                    status="warning",
+                )
             if not password:
                 raise CollectorError(
-                    "password is required for auth_type=password", status="warning"
+                    "密码认证需要提供 SSH 凭据", status="warning"
                 )
             connect_kwargs["password"] = password
         return connect_kwargs

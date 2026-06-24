@@ -399,9 +399,9 @@ class AuthService:
 
     def _normalize_password(self, value: Any) -> str:
         if not isinstance(value, str) or not value:
-            raise ValidationError("password 必须是非空字符串")
+            raise ValidationError("密码必须是非空字符串")
         if len(value) < PASSWORD_MIN_LENGTH:
-            raise ValidationError(f"password 长度至少需要 {PASSWORD_MIN_LENGTH} 位")
+            raise ValidationError(f"密码长度至少需要 {PASSWORD_MIN_LENGTH} 位")
         return value
 
     def _normalize_role(self, value: Any) -> str:

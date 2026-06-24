@@ -30,6 +30,15 @@ class FrontendSmokeTests(unittest.TestCase):
             "index.html should expose a stable frontend mount point",
         )
 
+    def test_index_uses_local_chart_vendor_asset(self):
+        html = self.read_static("index.html")
+        chart_vendor = STATIC_DIR / "vendor" / "chart.umd.min.js"
+
+        self.assertTrue(chart_vendor.exists(), f"Missing vendored Chart.js asset: {chart_vendor}")
+        self.assertNotIn("cdn.jsdelivr.net", html)
+        self.assertNotIn("https://cdn.", html)
+        self.assertIn("./vendor/chart.umd.min.js", html)
+
     def test_app_js_mounts_without_document_write(self):
         script = self.read_static("app.js")
 

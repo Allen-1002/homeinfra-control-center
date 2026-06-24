@@ -1,10 +1,11 @@
 import importlib
 import os
+import sqlite3
 import tempfile
 import unittest
 
 from homeinfra.app import HomeInfraApp
-from homeinfra.collectors import MockCommandCollector, BaseSSHCollector, MOCK_FIXTURES
+from homeinfra.collectors import MockCommandCollector, BaseSSHCollector, MOCK_FIXTURES, CollectorError, ParamikoSSHCollector, EXTERNAL_SECRET_SENTINEL
 from homeinfra.collector_service import CollectorService
 from homeinfra.errors import ApiError
 from homeinfra.monitoring import MonitoringService
@@ -172,19 +173,27 @@ class MonitoringAuthorizationTests(MonitoringContractTestCase):
         device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
         target_path = self.collection_item_path(device_path, "dev-server-01")
 
-        with self.assertRaises(ApiError) as ctx:
-            self.request(
-                "PATCH",
-                target_path,
-                role="operator",
-                body={
-                    "username": "root",
-                    "auth_type": "password",
-                    "password": "not-a-real-secret",
-                    "port": 2222,
-                },
-            )
-        self.assertEqual(ctx.exception.code, "forbidden")
+        for body in (
+            {"host": "198.51.100.77"},
+            {"port": 2222},
+            {"device_type": "nas"},
+            {"username": "root"},
+            {"auth_type": "password"},
+            {"password": "not-a-real-secret"},
+            {"private_key_path": "/tmp/id_operator"},
+            {"key_path": "/tmp/id_operator"},
+            {"inline_private_key": "INLINE-SECRET"},
+            {"encrypted_private_key": "INLINE-SECRET"},
+        ):
+            with self.subTest(body=body):
+                with self.assertRaises(ApiError) as ctx:
+                    self.request(
+                        "PATCH",
+                        target_path,
+                        role="operator",
+                        body=body,
+                    )
+                self.assertEqual(ctx.exception.code, "forbidden")
 
     def test_admin_can_manage_devices_and_groups(self):
         device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
@@ -205,6 +214,53 @@ class MonitoringAuthorizationTests(MonitoringContractTestCase):
             body={"name": "lab-device", "host": "192.0.2.72", "group": "lab-group"},
         )
         self.assertIsInstance(device_response, dict)
+
+    def test_admin_can_update_connection_settings_without_returning_plaintext_credentials(self):
+        device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
+        created, _ = self.request(
+            "POST",
+            device_path,
+            role="admin",
+            body={
+                "id": "dev-admin-edit-01",
+                "name": "Admin Editable Device",
+                "host": "192.0.2.129",
+                "group_id": "grp-ungrouped",
+                "device_type": "linux_server",
+            },
+        )
+        target_path = self.collection_item_path(device_path, created["id"])
+
+        updated, _ = self.request(
+            "PATCH",
+            target_path,
+            role="admin",
+            body={
+                "host": "192.0.2.130",
+                "port": 2201,
+                "device_type": "nas",
+                "username": "ops-admin",
+                "auth_type": "password",
+                "password": "AdminSecret123!",
+            },
+        )
+        self.assertEqual(updated["host"], "192.0.2.130")
+        self.assertEqual(updated["port"], 2201)
+        self.assertEqual(updated["device_type"], "nas")
+        self.assertEqual(updated["auth_type"], "password")
+        self.assertNotIn("password", updated)
+        self.assertNotIn("private_key_path", updated)
+        self.assertNotIn("key_path", updated)
+        self.assertNotIn("inline_private_key", updated)
+        self.assertNotIn("encrypted_private_key", updated)
+
+        snapshot = self.app.store.snapshot()
+        stored = next(device for device in snapshot["devices"] if device["id"] == created["id"])
+        self.assertEqual(stored["host"], "192.0.2.130")
+        self.assertEqual(stored["port"], 2201)
+        self.assertEqual(stored["device_type"], "nas")
+        self.assertEqual(stored["auth_type"], "password")
+        self.assertNotEqual(stored.get("password"), "AdminSecret123!")
 
 
 class MonitoringCrudAndFilteringTests(MonitoringContractTestCase):
@@ -515,7 +571,7 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
         rendered = str(audit).lower()
         self.assertRegex(rendered, r"forbidden|validation|device|group|ssh")
 
-    def test_sensitive_credentials_are_redacted_from_device_responses_and_audit_logs(self):
+    def test_sensitive_credentials_are_omitted_from_device_responses_and_audit_logs(self):
         device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
         created, _request_id = self.request(
             "POST",
@@ -528,7 +584,6 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
                 "username": "root",
                 "auth_type": "private_key",
                 "private_key_path": "/tmp/id_secret",
-                "encrypted_private_key": "ENCRYPTED-SECRET",
                 "group_id": "grp-ungrouped",
                 "device_type": "other",
                 "tags": ["secret"],
@@ -537,8 +592,10 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
             },
         )
         self.assertNotIn("password", created)
-        self.assertEqual(created["private_key_path"], "***configured***")
-        self.assertEqual(created["encrypted_private_key"], "***configured***")
+        self.assertNotIn("private_key_path", created)
+        self.assertNotIn("key_path", created)
+        self.assertNotIn("inline_private_key", created)
+        self.assertNotIn("encrypted_private_key", created)
 
         fetched, _request_id = self.request(
             "GET",
@@ -546,8 +603,10 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
             role="viewer",
         )
         self.assertNotIn("password", fetched)
-        self.assertEqual(fetched["private_key_path"], "***configured***")
-        self.assertEqual(fetched["encrypted_private_key"], "***configured***")
+        self.assertNotIn("private_key_path", fetched)
+        self.assertNotIn("key_path", fetched)
+        self.assertNotIn("inline_private_key", fetched)
+        self.assertNotIn("encrypted_private_key", fetched)
 
         audit, _request_id = self.request(
             "GET",
@@ -562,8 +621,144 @@ class MonitoringSqliteAndAuditTests(MonitoringContractTestCase):
         ]
         self.assertTrue(matching)
         audit_details = matching[0]["details"]
-        self.assertEqual(audit_details["private_key_path"], "***configured***")
-        self.assertEqual(audit_details["encrypted_private_key"], "***configured***")
+        self.assertNotIn("private_key_path", audit_details)
+        self.assertNotIn("key_path", audit_details)
+        self.assertNotIn("inline_private_key", audit_details)
+        self.assertNotIn("encrypted_private_key", audit_details)
+
+    def test_password_auth_is_not_persisted_as_plaintext(self):
+        device_path = self.first_existing_path("GET", self.DEVICE_COLLECTION_PATHS)
+        submitted_password = "PlaintextSecret123!"
+        created, _request_id = self.request(
+            "POST",
+            device_path,
+            role="admin",
+            body={
+                "id": "dev-password-01",
+                "name": "Password Device",
+                "host": "192.0.2.92",
+                "username": "root",
+                "auth_type": "password",
+                "password": submitted_password,
+                "group_id": "grp-ungrouped",
+                "device_type": "other",
+                "tags": ["password"],
+                "enabled": True,
+                "poll_interval": 60,
+            },
+        )
+        self.assertEqual(created["auth_type"], "password")
+        self.assertNotIn("password", created)
+
+        snapshot = self.app.store.snapshot()
+        stored = next(device for device in snapshot["devices"] if device["id"] == "dev-password-01")
+        self.assertNotEqual(stored.get("password"), submitted_password)
+
+    def test_validation_error_does_not_leak_private_key_path(self):
+        app = HomeInfraApp(collector_mode="ssh")
+        bootstrap = app.auth.bootstrap_admin({"username": "admin", "password": "ExampleAdminPass123"})
+        collector = app._collector_service.collector
+        self.assertIsInstance(collector, ParamikoSSHCollector)
+
+        def fake_quick_verify(device, timeout):
+            raise CollectorError(
+                f"私钥文件不存在: {device['private_key_path']}",
+                status="warning",
+            )
+
+        collector.quick_verify = fake_quick_verify  # type: ignore[method-assign]
+
+        with self.assertRaises(ApiError) as ctx:
+            app.handle_api_request(
+                method="POST",
+                path="/api/v1/devices",
+                headers={"authorization": f"Bearer {bootstrap['token']}"},
+                body={
+                    "id": "dev-validate-01",
+                    "name": "Validate Device",
+                    "host": "192.0.2.93",
+                    "username": "root",
+                    "auth_type": "private_key",
+                    "private_key_path": "/tmp/very-secret-key",
+                    "group_id": "grp-ungrouped",
+                    "device_type": "other",
+                    "tags": [],
+                    "enabled": True,
+                    "collection_interval": 60,
+                },
+                query={},
+            )
+        self.assertEqual(ctx.exception.code, "validation_error")
+        self.assertNotIn("/tmp/very-secret-key", ctx.exception.message)
+        self.assertNotIn("private_key_path", ctx.exception.message)
+
+    def test_collector_error_does_not_leak_private_key_path(self):
+        with self.assertRaises(CollectorError) as ctx:
+            ParamikoSSHCollector._build_connect_kwargs(
+                {
+                    "host": "192.0.2.94",
+                    "port": 22,
+                    "username": "root",
+                    "auth_type": "private_key",
+                    "private_key_path": "/tmp/very-secret-key",
+                },
+                5,
+            )
+        self.assertNotIn("/tmp/very-secret-key", ctx.exception.message)
+        self.assertNotIn("private_key_path", ctx.exception.message)
+
+    def test_legacy_plaintext_password_is_scrubbed_on_load(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "legacy.db")
+            # Initialize the schema on a real file DB, then close it.
+            SQLiteStore(db_path)
+            # Simulate legacy rows: a plaintext SSH password plus inline key
+            # material that pre-date the external-secret credential model.
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO device_groups(id, name, created_at, updated_at) "
+                "VALUES('grp-legacy', 'Legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+            )
+            conn.execute(
+                "INSERT INTO devices(id, name, host, username, auth_type, password, "
+                "private_key_path, encrypted_private_key, group_id, created_at, updated_at) "
+                "VALUES('dev-pw', 'Pw Device', '192.0.2.10', 'root', 'password', "
+                "'plaintext-secret', NULL, 'LEGACY-INLINE-KEY', 'grp-legacy', "
+                "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+            )
+            conn.execute(
+                "INSERT INTO devices(id, name, host, username, auth_type, password, "
+                "private_key_path, encrypted_private_key, group_id, created_at, updated_at) "
+                "VALUES('dev-key', 'Key Device', '192.0.2.11', 'root', 'private_key', "
+                "'stale-password', '/keys/legacy', 'LEGACY-INLINE-KEY', 'grp-legacy', "
+                "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+            )
+            conn.commit()
+            conn.close()
+
+            # Reopening the store runs the non-destructive scrub migration.
+            SQLiteStore(db_path)
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, auth_type, password, encrypted_private_key FROM devices"
+                )
+            }
+            conn.close()
+
+            pw = rows["dev-pw"]
+            self.assertEqual(pw["auth_type"], "password")
+            self.assertNotEqual(pw["password"], "plaintext-secret")
+            self.assertEqual(pw["password"], EXTERNAL_SECRET_SENTINEL)
+            self.assertIsNone(pw["encrypted_private_key"])
+
+            key = rows["dev-key"]
+            self.assertEqual(key["auth_type"], "private_key")
+            self.assertIsNone(key["password"])
+            self.assertIsNone(key["encrypted_private_key"])
 
     def test_collection_history_keeps_refresh_records(self):
         store = SQLiteStore()

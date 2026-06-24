@@ -7,6 +7,8 @@ services:
     container_name: homeinfra-control-center
     restart: unless-stopped
     environment:
+      # Container-side listen address. Keep HOST_BIND below at 127.0.0.1 to
+      # avoid publishing the UI beyond the local machine by default.
       APP_HOST: "${APP_HOST:-0.0.0.0}"
       APP_PORT: "${APP_PORT:-8000}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
@@ -18,6 +20,7 @@ services:
       SSH_RETRY_BASE_DELAY: "${SSH_RETRY_BASE_DELAY:-1.0}"
       SSH_KNOWN_HOSTS: "${SSH_KNOWN_HOSTS:-/app/ssh/known_hosts}"
     ports:
+      # Host-side exposure boundary. By default only localhost can reach the UI.
       - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8010}:${APP_PORT:-8000}"
     volumes:
       - homeinfra_control_center_data:/app/data

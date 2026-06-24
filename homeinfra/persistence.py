@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
+from .collectors import EXTERNAL_SECRET_SENTINEL
 from .mock_data import build_empty_state, build_initial_state
 
 STATE_KEYS = (
@@ -25,6 +26,21 @@ STATE_KEYS = (
     "collection_records",
     "alerts",
 )
+
+
+def _normalize_loaded_device_credentials(device: dict[str, Any]) -> None:
+    auth_type = device.get("auth_type", "none")
+    if auth_type == "password":
+        if device.get("password"):
+            device["password"] = EXTERNAL_SECRET_SENTINEL
+        device["private_key_path"] = None
+    elif auth_type == "private_key":
+        device["password"] = None
+    else:
+        device["password"] = None
+        device["private_key_path"] = None
+    # Legacy compatibility: inline key material is no longer supported.
+    device["encrypted_private_key"] = None
 
 DDL_STATEMENTS = [
     # Device groups
@@ -234,6 +250,7 @@ class SQLiteStore:
                     # Seed empty config if not present
                     self._seed_config(conn)
                 self._ensure_devices_schema(conn)
+                self._scrub_legacy_plaintext_credentials(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -245,6 +262,26 @@ class SQLiteStore:
         }
         if "verified" not in columns:
             conn.execute("ALTER TABLE devices ADD COLUMN verified INTEGER NOT NULL DEFAULT 0")
+
+    def _scrub_legacy_plaintext_credentials(self, conn: sqlite3.Connection) -> None:
+        """Non-destructive migration: clear any plaintext SSH credentials that
+        pre-date the external-secret model so legacy DB files no longer retain
+        them. Password-auth devices keep the sentinel marker (credential must be
+        supplied by an external source); other auth types are NULLed out. Legacy
+        inline key material (``encrypted_private_key``) is always NULLed."""
+        conn.execute(
+            "UPDATE devices SET password = NULL "
+            "WHERE auth_type != 'password' AND password IS NOT NULL"
+        )
+        conn.execute(
+            "UPDATE devices SET password = ? "
+            "WHERE auth_type = 'password' AND password IS NOT NULL AND password != ?",
+            (EXTERNAL_SECRET_SENTINEL, EXTERNAL_SECRET_SENTINEL),
+        )
+        conn.execute(
+            "UPDATE devices SET encrypted_private_key = NULL "
+            "WHERE encrypted_private_key IS NOT NULL"
+        )
 
     def _migrate_from_legacy(self, conn: sqlite3.Connection) -> None:
         """Migrate from Phase 1 single app_state JSON table to normalized tables."""
@@ -438,6 +475,7 @@ class SQLiteStore:
                     d["enabled"] = bool(d.get("enabled", 1))
                     d["verified"] = bool(d.get("verified", 0))
                     d["collection_interval"] = d.get("collection_interval", d.get("poll_interval", 60))
+                    _normalize_loaded_device_credentials(d)
                     converted_devices.append(d)
                 state["devices"] = converted_devices
 
@@ -507,6 +545,7 @@ class SQLiteStore:
                         d["enabled"] = bool(d.get("enabled", 1))
                         d["verified"] = bool(d.get("verified", 0))
                         d["collection_interval"] = d.get("collection_interval", d.get("poll_interval", 60))
+                        _normalize_loaded_device_credentials(d)
                     return rows
                 if key == "collection_records":
                     rows = rows_to_list(
@@ -589,6 +628,7 @@ class SQLiteStore:
             d["enabled"] = bool(d.get("enabled", 1))
             d["verified"] = bool(d.get("verified", 0))
             d["collection_interval"] = d.get("collection_interval", d.get("poll_interval", 60))
+            _normalize_loaded_device_credentials(d)
         state["devices"] = device_rows
 
         collection_rows = rows_to_list(
